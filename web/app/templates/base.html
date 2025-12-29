@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, shrink-to-fit=no">
+
+        <link rel="stylesheet" href="{{ url_for('static', filename='css/bootstrap.min.css') }}">
+
+        {% block head %}{% endblock %}
+
+        <title>{% block title %}{% endblock %}</title>
+
+    </head>
+
+    <body style="background-color: aliceblue;">
+        
+        <nav class="navbar navbar-expand-md" style="background-color: white;">
+            <div class="container">
+                <a class="navbar-brand" href="{{ url_for('index') }}">
+                    <img src="{{ url_for('static', filename='img/logo.png') }}" width="30" height="30" class="d-inline-block align-top" alt="">
+                    <span class="align-middle" style="font-weight: bold;color:#FFFFFF;font-size: 1.0em;">LayoutGCN</span>
+                </a>
+
+                <div class="navbar-light" id="navbarSupportedContent">
+                    <ul class="navbar-nav navbar-right">
+                        <li class="nav-item active">
+                            <a class="nav-link" style="color:#FFFFFF;" href="{{ url_for('index') }}">首页</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" style="color:#FFFFFF;" href="{{ url_for('about', page=1) }}">编辑</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" style="color:#FFFFFF;" href="{{ url_for('about', page=1) }}">标注</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" style="color:#FFFFFF;" href="{{ url_for('about', page=1) }}">分析</a>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </nav>
+
+        <div class="container min-vh-100">
+            
+            <div class="row">
+                <div class="col"></div>
+
+                <div id="alert-message" class="col text-center float-left">
+                    {% with messages = get_flashed_messages(with_categories=true)%}
+                    {% if messages %}
+                        {% for category, message in messages %}
+                            {% if category == 'info'%}
+                                <div id="alert-body" class="alert alert-success mt-2" role="alert">
+                                    {{ message }}
+                                </div>
+                            {% else %}
+                            {% if category == 'warning'%}
+                                <div id="alert-body" class="alert alert-warning mt-2" role="alert">
+                                    {{ message }}
+                                </div>
+                            {% else %}
+                            {% if category == 'error'%}
+                                <div id="alert-body" class="alert alert-danger mt-2" role="alert">
+                                    {{ message }}
+                                </div>
+                            {% else %}
+                        {% endfor %}
+                    {% endif %}
+                    {% endwith %}
+                </div>
+
+                <div class="col"></div>
+            </div>
+
+            {% block content %}{% endblock %}
+
+        </div>
+
+        <script src="{{ url_for('static', filename='js/jquery.min.js') }}"></script>
+        <script src="{{ url_for('static', filename='js/bootstrap.bundle.min.js') }}"></script>
+
+    </body>
+</html>
