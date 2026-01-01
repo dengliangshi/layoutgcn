@@ -12,7 +12,7 @@ python3 -m layoutgcn.trainer \
     --do-eval \
     --output-dir ./outputs/ \
     --logging-steps 10 \
-    --num-train-epochs 100 \
+    --num-train-epochs 10 \
     --per-device-train-batch-size 32 \
     --per-device-eval-batch-size 8 \
     --learning-rate 0.001 \

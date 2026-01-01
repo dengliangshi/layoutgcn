@@ -390,11 +390,6 @@ def main():
     column_names = datasets["train"].column_names
     datasets = datasets.map(process_fn, batched=False, remove_columns=column_names, load_from_cache_file=False)
 
-    for sample in datasets["train"]:
-        print(sample["sequence_lengths"])
-        print(sample["num_nodes"])
-        exit(0)
-
     current_path, _ = os.path.split(os.path.abspath(__file__))
     metric = evaluate.load(os.path.join(current_path, "metrics/accuracy.py"))
 
