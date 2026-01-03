@@ -167,7 +167,7 @@ class Evaluator(object):
             eval_result = {}
             for index in range(len(predict_blocks)):
                 predict_category = predict_blocks[index].get("category")
-                if not predict_category:
+                if not predict_category or predict_category == "other":
                     continue
                 if predict_category not in eval_result:
                     eval_result[predict_category] = {"tp": 0, "fp": 0, "fn": 0}
