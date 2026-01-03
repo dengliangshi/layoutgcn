@@ -13,7 +13,7 @@
 
 
 # User define module
-from web.app import db
+from app import db
 
 # ------------------------------------------------------Global Variables----------------------------------------------------
 

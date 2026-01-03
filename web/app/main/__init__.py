@@ -19,4 +19,4 @@ from flask import Blueprint
 main = Blueprint("main", __name__)
 
 # -----------------------------------------------------------Main-----------------------------------------------------------
-from app.main import views
+from app.main import home

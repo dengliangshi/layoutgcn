@@ -205,15 +205,16 @@ class LayougGCNDocProcessor(object):
                 previous = 0
                 sub_labels = []
                 for label in block.get("labels", []):
-                    tokens = self.tokenizer.encode(block["content"][label["start"]:previous])
+                    tokens = self.tokenizer.encode(block["content"][previous:label["start"]])
                     sub_labels.extend([0, ] * len(tokens))
                     label_id = self.config.label2id.get(label.get("category"), 0)
                     sub_labels.append(label_id)
                     tokens = self.tokenizer.encode(block["content"][label["start"]:label["end"]])
                     sub_labels.extend([label_id + 1, ] * (len(tokens) - 1))
                     previous = label["end"]
-                tokens = self.tokenizer.encode(block["content"][previous:])
-                sub_labels.extend([0, ] * len(tokens))
+                if previous < len(block["content"]):
+                    tokens = self.tokenizer.encode(block["content"][previous:])
+                    sub_labels.extend([0, ] * len(tokens))
                 if truncation:
                     sub_labels = sub_labels[:self.config.max_seq_length]
                 if padding:
@@ -228,15 +229,6 @@ class LayougGCNDocProcessor(object):
             outputs["labels"] = torch.tensor([outputs["labels"]], dtype=torch.int64)
 
         return outputs
-
-    def t(self, probabilities: np.array, mask: Optional[np.array]=None, blocks: Optional[list[dict]]=None):
-
-        
-        predict_label_ids = np.argmax(probabilities, axis=-1) * mask
-        scores = np.max(probabilities, axis=-1)
-        for index in range(len(blocks)):
-            pattern.finditer(",".join([str(x) for x in predict_label_ids[index]]))
-
 
     def _post_process_for_doc_cls(self,
         probabilities: Optional[Union[np.array, torch.Tensor]]
@@ -362,7 +354,7 @@ class LayougGCNDocProcessor(object):
     ):
         values = sorted(self.config.label2id.values(), reverse=True)
         expressions = [f"({value} )?({value + 1} )*{value + 1}|{value}" for value in values]
-        pattern = re.compile("|".join(expressions))
+        pattern = re.compile(f"({'|'.join(expressions)})(?!\d)")
         # [max_num_nodes, max_seq_length]
         label_ids = (np.argmax(probabilities, axis=-1) * mask).tolist()
         scores = np.max(probabilities, axis=-1).tolist()

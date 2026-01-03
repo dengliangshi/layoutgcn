@@ -16,7 +16,7 @@
         
         <nav class="navbar navbar-expand-md" style="background-color: white;">
             <div class="container">
-                <a class="navbar-brand" href="{{ url_for('index') }}">
+                <a class="navbar-brand" href="{{ url_for('main.index') }}">
                     <img src="{{ url_for('static', filename='img/logo.png') }}" width="30" height="30" class="d-inline-block align-top" alt="">
                     <span class="align-middle" style="font-weight: bold;color:#FFFFFF;font-size: 1.0em;">LayoutGCN</span>
                 </a>
@@ -24,7 +24,7 @@
                 <div class="navbar-light" id="navbarSupportedContent">
                     <ul class="navbar-nav navbar-right">
                         <li class="nav-item active">
-                            <a class="nav-link" style="color:#FFFFFF;" href="{{ url_for('index') }}">首页</a>
+                            <a class="nav-link" style="color:#FFFFFF;" href="{{ url_for('main.index') }}">首页</a>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link" style="color:#FFFFFF;" href="{{ url_for('about', page=1) }}">编辑</a>
@@ -47,25 +47,25 @@
 
                 <div id="alert-message" class="col text-center float-left">
                     {% with messages = get_flashed_messages(with_categories=true)%}
-                    {% if messages %}
-                        {% for category, message in messages %}
-                            {% if category == 'info'%}
-                                <div id="alert-body" class="alert alert-success mt-2" role="alert">
-                                    {{ message }}
-                                </div>
-                            {% else %}
-                            {% if category == 'warning'%}
-                                <div id="alert-body" class="alert alert-warning mt-2" role="alert">
-                                    {{ message }}
-                                </div>
-                            {% else %}
-                            {% if category == 'error'%}
-                                <div id="alert-body" class="alert alert-danger mt-2" role="alert">
-                                    {{ message }}
-                                </div>
-                            {% else %}
-                        {% endfor %}
-                    {% endif %}
+                        {% if messages %}
+                            {% for category, message in messages %}
+                                {% if category == 'info'%}
+                                    <div id="alert-body" class="alert alert-success mt-2" role="alert">
+                                        {{ message }}
+                                    </div>
+                                {% endif %}
+                                {% if category == 'warning'%}
+                                    <div id="alert-body" class="alert alert-warning mt-2" role="alert">
+                                        {{ message }}
+                                    </div>
+                                {% endif %}
+                                {% if category == 'error'%}
+                                    <div id="alert-body" class="alert alert-danger mt-2" role="alert">
+                                        {{ message }}
+                                    </div>
+                                {% endif %}
+                            {% endfor %}
+                        {% endif %}
                     {% endwith %}
                 </div>
 

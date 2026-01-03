@@ -154,6 +154,56 @@ class Evaluator(object):
             "macro_f1": self.calculate_macro_f1(global_eval_result),
             "details": global_eval_result
         }
+    
+    def evaluate_for_node_cls(self, samples):
+        
+        global_eval_result = {}
+
+        for sample in samples:
+
+            blocks = json.loads(sample["blocks"])
+            predict_blocks = json.loads(sample["predict_result"])
+
+            eval_result = {}
+            for index in range(len(predict_blocks)):
+                predict_category = predict_blocks[index].get("category")
+                if not predict_category:
+                    continue
+                if predict_category not in eval_result:
+                    eval_result[predict_category] = {"tp": 0, "fp": 0, "fn": 0}
+                if predict_category not in global_eval_result:
+                    global_eval_result[predict_category] = {"tp": 0, "fp": 0, "fn": 0}
+                category = blocks[index].get("category")
+                if predict_category != category:
+                    eval_result[predict_category]["fp"] += 1
+                    global_eval_result[predict_category]["fp"] += 1
+                else:
+                    eval_result[predict_category]["tp"] += 1
+                    global_eval_result[predict_category]["tp"] += 1
+                if not category:
+                    continue
+                if category not in eval_result:
+                    eval_result[category] = {"tp": 0, "fp": 0, "fn": 0}
+                if category not in global_eval_result:
+                    global_eval_result[category] = {"tp": 0, "fp": 0, "fn": 0}
+                if predict_category != category:
+                    eval_result[category]["fn"] += 1
+                    global_eval_result[category]["fn"] += 1
+            eval_result = self.calculate_f1(eval_result)
+            kv_eval_result = {
+                "micro_f1": self.calculate_micro_f1(eval_result),
+                "macro_f1": self.calculate_macro_f1(eval_result),
+                "details": eval_result
+            }
+            sample["kv_eval_result"] = json.dumps(kv_eval_result, ensure_ascii=False)
+
+        global_eval_result = self.calculate_f1(global_eval_result)
+
+        return {
+            "micro_f1": self.calculate_micro_f1(global_eval_result),
+            "macro_f1": self.calculate_macro_f1(global_eval_result),
+            "details": global_eval_result
+        }
 
     def evaluate(self, samples):
 
@@ -161,3 +211,5 @@ class Evaluator(object):
             return self.evaluate_for_doc_cls(samples)
         elif self.task_type == "information_extraction":
             return self.evaluate_for_ie(samples)
+        elif self.task_type == "node_classification":
+            return self.evaluate_for_node_cls(samples)

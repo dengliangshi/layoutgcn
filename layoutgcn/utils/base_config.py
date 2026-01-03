@@ -186,7 +186,12 @@ class BaseConfig(object):
             `str`: String containing all the attributes that make up this configuration instance in JSON format.
         """
         config_dict = self.to_dict()
-        return json.dumps(config_dict, indent=4, sort_keys=True) + "\n"
+        return json.dumps(
+            config_dict,
+            ensure_ascii=False,
+            indent=4,
+            sort_keys=True
+        )
 
     def to_json_file(self, json_file_path: Union[str, os.PathLike]):
         """
