@@ -87,6 +87,7 @@ class LayougGCNDocProcessor(object):
             category: Optional[Union[str, list[str]]] = None,
             padding: Union[bool] = True,
             truncation: Union[bool] = True,
+            is_training: Optional[bool] = False,
             return_tensors: Union[bool] = False
         ):
         outputs = {}
@@ -94,7 +95,7 @@ class LayougGCNDocProcessor(object):
         if blocks is None:
             raise ValueError(f"You need to provide at least one input to call {self.__class__.__name__}")
         # Shuffle the blocks
-        if self.config.shuffle_prob > 0 and random.random() < self.config.shuffle_prob:
+        if is_training and self.config.shuffle_prob > 0 and random.random() < self.config.shuffle_prob:
             random.shuffle(blocks)
         # Truncate the number of nodes
         if truncation and self.config.max_num_nodes is not None:
@@ -117,8 +118,11 @@ class LayougGCNDocProcessor(object):
             padding_token_id_row = [self.tokenizer.pad_token_id, ] * self.config.max_seq_length
             token_ids += [padding_token_id_row, ] * (self.config.max_num_nodes - num_nodes)
             sequence_length += [0, ] * (self.config.max_num_nodes - num_nodes)
-        outputs["token_ids"] = torch.tensor([token_ids], dtype=torch.int32) if return_tensors else np.array(token_ids, dtype=np.int32)
-        outputs["sequence_lengths"] = torch.tensor([sequence_length], dtype=torch.int32) if return_tensors else np.array(sequence_length, dtype=np.int32)
+        outputs["token_ids"] = np.array(token_ids, dtype=np.int32)
+        outputs["sequence_lengths"] = np.array(sequence_length, dtype=np.int32)
+        if return_tensors:
+            outputs["token_ids"] = torch.tensor([outputs["token_ids"]], dtype=torch.int32)
+            outputs["sequence_lengths"] = torch.tensor([outputs["sequence_lengths"]], dtype=torch.int32)
         # Get the height and width of the document
         if height is None or width is None:
             if image is not None:
@@ -144,8 +148,9 @@ class LayougGCNDocProcessor(object):
         layout_features = np.concatenate([position, size, np.expand_dims(shape, axis=-1)], axis=-1)
         mask = (np.arange(self.config.max_num_nodes) < num_nodes).reshape(-1, 1)
         masked_layout_features = layout_features * mask.astype(np.float32)
-        outputs["layout_features"] = torch.tensor([masked_layout_features], dtype=torch.float32) if return_tensors else np.array(masked_layout_features)
-
+        outputs["layout_features"] = np.array(masked_layout_features)
+        if return_tensors:
+            outputs["layout_features"] = torch.tensor([outputs["layout_features"]], dtype=torch.float32)
         # Get the adjacency angle matrix
         # [num_blocks, 1, 4]
         expand_boxes = np.expand_dims(boxes, axis=1)
@@ -253,7 +258,7 @@ class LayougGCNDocProcessor(object):
             copied_blocks[index]["category"] = self.config.id2label[str(label_ids[index])]
             copied_blocks[index]["score"] = scores[index]
         return {
-            "blocks": copied_blocks
+            "predict_blocks": json.dumps(copied_blocks, ensure_ascii=False)
         }
 
     def _find_labels(self, label_ids: list[int], scores: list[float], tokens: list[str], pattern: re.Pattern):
@@ -291,7 +296,7 @@ class LayougGCNDocProcessor(object):
         target_height = target_y2 - target_y1
         target_char_len = target_width / len(target["content"])
 
-        if source_height / target_height > 2 or target_height / source_height > 2:
+        if source_height / (target_height + 1e-5) > 2 or target_height / (source_height + 1e-5) > 2:
             return True
 
         if target_y1 > source_y2 or target_y2 < source_y1:

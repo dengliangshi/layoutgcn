@@ -56,12 +56,12 @@ class Evaluator(object):
 
         num_classes = len(result)
         return {
-            "precision": precision / num_classes,
-            "recall": recall / num_classes,
-            "f1": f1 / num_classes,
-            "tp": tp / num_classes,
-            "fp": fp / num_classes,
-            "fn": fn / num_classes,
+            "precision": precision / num_classes if num_classes > 0 else 0,
+            "recall": recall / num_classes if num_classes > 0 else 0,
+            "f1": f1 / num_classes if num_classes > 0 else 0,
+            "tp": tp / num_classes if num_classes > 0 else 0,
+            "fp": fp / num_classes if num_classes > 0 else 0,
+            "fn": fn / num_classes if num_classes > 0 else 0
         }
 
     def calculate_f1(self, eval_result):

@@ -248,9 +248,9 @@ def main():
                 # Node classification task
                 if dataset_args.task_type == "node_classification":
                     if block.get("category") is None:
-                        block["category"] = "other"
+                        continue
                     if block["category"] not in mappings:
-                        mappings[block["category"]] = len(mappings)
+                        mappings[block["category"]] = len(mappings) + 1
                     if block.get("category") not in label_counts:
                         label_counts[block["category"]] = 0
                     label_counts[block["category"]] += 1
@@ -382,10 +382,11 @@ def main():
             width=example.get("width"),
             category=example.get("category"),
             padding=True,
-            truncation=True
+            truncation=True,
+            is_training=True
         )
         return output
-    
+
     # Get Dataset
     column_names = datasets["train"].column_names
     datasets = datasets.map(process_fn, batched=False, remove_columns=column_names, load_from_cache_file=False)

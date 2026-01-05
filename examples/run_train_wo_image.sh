@@ -15,7 +15,7 @@ python3 -m layoutgcn.trainer \
     --num-train-epochs 100 \
     --per-device-train-batch-size 32 \
     --per-device-eval-batch-size 8 \
-    --learning-rate 0.01 \
+    --learning-rate 0.001 \
     --warmup-steps 200 \
     --save-strategy steps \
     --save-steps 500 \

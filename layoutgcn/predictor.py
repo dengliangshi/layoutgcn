@@ -47,7 +47,9 @@ def get_args():
     parser.add_argument("--data-dir", type=str, default=None, required=True, help="Path to the dataset.")
     parser.add_argument("--output-dir", type=str, default=None, required=True, help="Path to the output directory.")
     parser.add_argument("--batch-size", type=int, default=1, help="Batch size.")
+    parser.add_argument("--do-evaluate", type=bool, default=False, help="Whether to evaluate the model.")
     return parser.parse_args()
+
 
 
 def process_fn(processor, sample):
@@ -128,9 +130,9 @@ def main(args):
                 row["mask"] = masks[index]
                 result = post_process(processor, row, column_names)
                 results.append(result)
-
-    eval_result = evaluator.evaluate(results)
-    print(json.dumps(eval_result, ensure_ascii=False, indent=4))
+    if args.do_evaluate:
+        eval_result = evaluator.evaluate(results)
+        print(json.dumps(eval_result, ensure_ascii=False, indent=4))
     dataset = Dataset.from_list(results)
     dataset.to_json(os.path.join(args.output_dir, "result.json"), force_ascii=False)
 
