@@ -312,16 +312,16 @@ class LayougGCNDocProcessor(object):
         target_height = target_y2 - target_y1
         target_char_len = target_width / len(target["content"])
 
-        if source_height / (target_height + 1e-5) > 2 or target_height / (source_height + 1e-5) > 2:
+        if source_height / (target_height + 1e-5) > 2.5 or target_height / (source_height + 1e-5) > 2.5:
             return True
 
         if target_y1 > source_y2 or target_y2 < source_y1:
             y_gap = max(target_y1 - source_y2, source_y1 - target_y2)
-            if y_gap > (target_height + source_height):
+            if y_gap > 1.5 * (target_height + source_height):
                 return True
         else:
             x_gap = max(target_x1 - source_x2, source_x1 - target_x2)
-            if x_gap > 2 * (target_char_len + source_char_len):
+            if x_gap > 2.5 * (target_char_len + source_char_len):
                 return True
         return False
 
