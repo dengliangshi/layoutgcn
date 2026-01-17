@@ -17,6 +17,7 @@ python3 -m layoutgcn.trainer \
     --task-type information_extraction \
     --max-seq-length 45 \
     --max-num-nodes 32 \
+    --use-crf True \
     --do-train \
     --do-eval \
     --output-dir ./outputs/ \

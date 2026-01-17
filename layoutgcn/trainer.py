@@ -221,6 +221,13 @@ class ModelArguments:
         },
     )
 
+    use_crf: Optional[bool] = field(
+        default=None,
+        metadata={
+            "help": "Whether to use CRF layer. Defaults to None if not provided."
+        },
+    )
+
 
 def main():
     

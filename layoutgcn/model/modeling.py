@@ -17,6 +17,7 @@ from dataclasses import dataclass
 import torch
 import torchvision
 import safetensors.torch
+from torchcrf import CRF
 import torch.nn.functional as F
 from transformers.modeling_outputs import ModelOutput
 from transformers import EfficientNetModel, EfficientNetConfig
@@ -612,19 +613,25 @@ class InfoExtractionOutput(ModelOutput):
     logits: Optional[torch.FloatTensor] = None
     probabilities: Optional[torch.FloatTensor] = None
     mask: Optional[torch.FloatTensor] = None
+    predictions: Optional[torch.LongTensor] = None
 
 
 class LayoutGCNForInfoExtraction(LayoutGCNBaseModel):
     
     def __init__(self, config):
         super().__init__(config)
+        if config.use_crf:
+            self.crf = CRF(num_tags=config.num_labels, batch_first=True)
         self.linear = torch.nn.Linear(4 * config.hidden_size, config.num_labels)
 
-
-    def _pad_and_reshape(self, tensor: torch.Tensor, mask: torch.Tensor, target_shape: tuple, device: torch.device,     dtype: torch.dtype = torch.float32) -> torch.Tensor:
-        padded_tensor = torch.zeros(target_shape, dtype=dtype, device=device)
-        padded_tensor[mask] = tensor
-        return padded_tensor
+    def _decode_with_crf(self, logits: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """Decode the best path using Viterbi algorithm implemented in CRF layer."""
+        batch_size = logits.shape[0]
+        predictions = self.crf.decode(logits, mask=mask.bool())
+        predict_tensor = torch.zeros(size=(batch_size, self.config.max_seq_length), dtype=torch.long, device=logits.device)
+        for index, prediction in enumerate(predictions):
+            predict_tensor[index, :len(prediction)] = torch.tensor(prediction, dtype=torch.long, device=logits.device)
+        return predict_tensor
 
     def forward(self, 
         token_ids: Optional[torch.Tensor] = None,
@@ -652,10 +659,27 @@ class LayoutGCNForInfoExtraction(LayoutGCNBaseModel):
         # [total_num_nodes, max_seq_length, 4*hidden_size]
         enhanced_sequence_outputs = torch.cat([output["sequence_outputs"], tiled_node_embeddings], dim=-1)
         logits = self.linear(enhanced_sequence_outputs)
+        
+        # Decode predictions
+        if self.config.use_crf:
+            predictions = self._decode_with_crf(logits, output["sequence_mask"])
+        else:
+            predictions = logits.argmax(dim=-1)
+
+        # Compute probabilities
         probabilities = F.softmax(logits, dim=-1)
 
-        # Reshape probabilities and mask with padding
         batch_size = token_ids.shape[0]
+        # Reahpe predictions with padding
+        padding_predictions = torch.zeros(
+            size=(batch_size * self.config.max_num_nodes, self.config.max_seq_length),
+            dtype=torch.long,
+            device=logits.device
+        )
+        padding_predictions[flatten_graph_mask > 0] = predictions
+        reshaped_padding_predictions = padding_predictions.view(-1, self.config.max_num_nodes, self.config.max_seq_length)
+
+        # Reshape probabilities with padding
         padding_probabilities = torch.zeros(
             size=(batch_size * self.config.max_num_nodes, self.config.max_seq_length, self.config.num_labels),
             dtype=torch.float32,
@@ -664,7 +688,8 @@ class LayoutGCNForInfoExtraction(LayoutGCNBaseModel):
         padding_probabilities[flatten_graph_mask > 0] = probabilities
         reshaped_padding_probabilities = padding_probabilities.view(-1, self.config.max_num_nodes,
             self.config.max_seq_length, self.config.num_labels)
-
+        
+        # Reshape probabilities with padding
         padding_sequence_mask = torch.zeros(
             size=(batch_size * self.config.max_num_nodes, self.config.max_seq_length),
             dtype=torch.long,
@@ -674,17 +699,22 @@ class LayoutGCNForInfoExtraction(LayoutGCNBaseModel):
         reshaped_padding_sequence_mask = padding_sequence_mask.view(-1, self.config.max_num_nodes, self.config.max_seq_length)
 
         # Compute loss if labels are provided
-        loss = self._compute_loss(logits, labels.view((-1, self.config.max_seq_length))[flatten_graph_mask > 0]) if labels is not None else None
+        if self.config.use_crf:
+            labels.view((-1, self.config.max_seq_length))[flatten_graph_mask > 0]
+            loss = - self.crf(emissions=logits, tags=labels, mask=output["sequence_mask"].bool(), reduction='mean') if labels is not None else None
+        else:
+            loss = self._compute_loss(logits, labels.view((-1, self.config.max_seq_length))[flatten_graph_mask > 0]) if labels is not None else None
 
         if not return_dict:
-            output = (logits, reshaped_padding_probabilities, reshaped_padding_sequence_mask, )
+            output = (logits, reshaped_padding_probabilities, reshaped_padding_sequence_mask, reshaped_padding_predictions, )
             return ((loss,) + output) if loss is not None else output
 
         return InfoExtractionOutput(
             loss=loss,
             logits=logits,
             probabilities=reshaped_padding_probabilities,
-            mask=reshaped_padding_sequence_mask
+            mask=reshaped_padding_sequence_mask,
+            predictions=reshaped_padding_predictions
         )
 
 

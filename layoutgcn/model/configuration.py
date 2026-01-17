@@ -40,6 +40,7 @@ class LayoutGCNConfig(BaseConfig):
         efficientnet_model_path: Optional[str]="./efficientnet-b0",
         roi_pooling_size: Optional[int]=7,
         num_labels: Optional[int]=2,
+        use_crf: Optional[bool]=False,
         use_return_dict: Optional[bool]=True,
         **kwargs
     ):
@@ -58,9 +59,10 @@ class LayoutGCNConfig(BaseConfig):
         self.roi_pooling_size = roi_pooling_size
         self.dropout_prob = dropout_prob
         self.num_angle_embeddings = num_angle_embeddings
+        self.use_crf = use_crf
         self.use_return_dict = use_return_dict
         super().__init__(**kwargs)
-    
+
     @classmethod
     def from_model_path(
         cls,
