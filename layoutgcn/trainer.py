@@ -372,6 +372,8 @@ def main():
     trainer.log_metrics("train", training_result.metrics)
     trainer.save_model(model_path)
 
+    datasets["test"].set_transform(valid_transform)
+
     eval_result = trainer.evaluate(
         eval_dataset=datasets["test"] if training_args.do_eval else None,
         metric_key_prefix="test"
