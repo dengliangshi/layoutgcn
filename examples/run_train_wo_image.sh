@@ -2,6 +2,15 @@
 export WANDB_MODE=offline
 export WANDB_DIR=./outputs/
 
+
+python3 -m layoutgcn.preprocess \
+    --data-dir ./data/ \
+    --output-dir ./outputs/ \
+    --max-seq-length 45 \
+    --max-num-nodes 32 \
+    --task-type information_extraction
+
+
 python3 -m layoutgcn.trainer \
     --run-name layoutgcn-wo-image \
     --data-dir ./data/ \

@@ -10,7 +10,7 @@
 import os
 import math
 import logging
-from typing import Optional
+from typing import Optional, List
 from dataclasses import dataclass
 
 # Third-party libraries
@@ -29,8 +29,7 @@ logger = logging.getLogger(__name__)
 # -----------------------------------------------------------Main-----------------------------------------------------------
 class TextEncoder(torch.nn.Module):
     """
-    TextEncoder is a PyTorch module implementing a TextCNN-based model for text feature extraction. 
-    It processes input text sequences and generates both sequence-level and pooled representations.
+    TextEncoder is a PyTorch module implementing a TextCNN-based model for text feature extraction. It processes input text sequences and generates both sequence-level and pooled representations.
     """
     def __init__(self, config):
         """TextCNN model for text feature extraction.
@@ -45,12 +44,15 @@ class TextEncoder(torch.nn.Module):
         """
         super(TextEncoder, self).__init__()
         self.config = config
+        
         # Embedding layer
         self.embedding = torch.nn.Embedding(
             num_embeddings=config.num_word_embeddings,
             embedding_dim=config.embedding_dim,
-            padding_idx=config.padding_token_idx
+            padding_idx=config.padding_token_idx,
+            sparse=False
         )
+
         # Convolutional layers
         self.convs = torch.nn.ModuleList([
             torch.nn.Conv1d(
@@ -70,6 +72,11 @@ class TextEncoder(torch.nn.Module):
         self.layer_norm = torch.nn.LayerNorm(normalized_shape=config.hidden_size)
         # Dropout layer
         self.dropout = torch.nn.Dropout(config.dropout_prob)
+        # Cache for sequence mask generation
+        self.register_buffer(
+            "position_ids",
+            torch.arange(config.max_seq_length, dtype=torch.long)
+        )
 
     def conv_and_pool(self, embeddings, sequence_mask):
         """Convolution and max-pooling layer.
@@ -81,21 +88,21 @@ class TextEncoder(torch.nn.Module):
                 pooling_outputs: Pooled outputs, shape [batch_size, hidden_size]
         """
         # [batch_size, embedding_dim, max_seq_length]
-        trans_embeddings = embeddings.permute(0, 2, 1)  
-        ngram_list = [torch.relu(conv(trans_embeddings)) for conv in self.convs]
+        trans_embeddings = embeddings.transpose(1, 2)  
+        ngram_list = [torch.nn.functional.relu(conv(trans_embeddings), inplace=True)
+            for conv in self.convs]
         # [batch_size, sum(num_filters), max_seq_length]
-        ngrams = torch.cat(ngram_list, 1)
+        ngrams = torch.cat(ngram_list, dim=1)
         # [batch_size, max_seq_length, sum(num_filters)]
-        trans_ngrams = ngrams.permute(0, 2, 1) * sequence_mask.unsqueeze(-1)
+        trans_ngrams = ngrams.transpose(1, 2) * sequence_mask.unsqueeze(-1)
         # [batch_size, max_seq_length, hidden_size]
         sequence_outputs = self.linear_project(trans_ngrams)
-        # [batch_size, hidden_size, max_seq_length]
-        trans_sequence_outputs = sequence_outputs.permute(0, 2, 1)
+        # Max pooling over time
+        # [batch_size, sum(num_filters)]
+        masked_ngrams = ngrams + (1 - sequence_mask.unsqueeze(1)) * -1e9
+        pooling_features = masked_ngrams.max(dim=-1, keepdim=False)[0]
         # [batch_size, hidden_size]
-        pooling_outputs = torch.max_pool1d(
-            input=trans_sequence_outputs,
-            kernel_size=self.config.max_seq_length
-        ).squeeze(2)
+        pooling_outputs = self.linear_project(pooling_features)
         return sequence_outputs, pooling_outputs
 
     def forward(self, token_ids, sequence_lengths):
@@ -108,10 +115,10 @@ class TextEncoder(torch.nn.Module):
             pooling_outputs: Pooled outputs, shape [batch_size, hidden_size]
             sequence_mask: Mask for sequence, shape [batch_size, max_seq_length]
         """
-        sequence_mask = torch.arange(
-            self.config.max_seq_length,
-            device=token_ids.device
-        ).expand(sequence_lengths.shape[0], self.config.max_seq_length) < sequence_lengths.unsqueeze(1)
+        # Convert sparse tensor to dense if necessary
+        if token_ids.is_sparse:
+            token_ids = token_ids.to_dense()
+        sequence_mask = (self.position_ids.unsqueeze(0) < sequence_lengths.unsqueeze(1)).to(torch.int64)
         # [batch_size, max_seq_length, embedding_dim]
         embeddings = self.embedding(token_ids) * sequence_mask.unsqueeze(-1)
         # sequence_outputs: [batch_size, max_seq_length, hidden_size]
@@ -131,7 +138,9 @@ class VisualEncoder(torch.nn.Module):
         super(VisualEncoder, self).__init__()
         self.config = config
         # EfficientNet model
-        self.efficientnet_config = EfficientNetConfig.from_pretrained(config.efficientnet_model_path)
+        self.efficientnet_config = EfficientNetConfig.from_pretrained(
+            pretrained_model_name_or_path=config.efficientnet_model_path
+        )
         self.efficientnet = EfficientNetModel.from_pretrained(
             pretrained_model_name_or_path=config.efficientnet_model_path,
             config=self.efficientnet_config
@@ -143,11 +152,29 @@ class VisualEncoder(torch.nn.Module):
         # Linear projection layer
         self.linear_project = torch.nn.Linear(
             in_features=sum(self.efficientnet_config.out_channels),
-            out_features=2*config.hidden_size
+            out_features=2 * config.hidden_size
         )
         # Layer normalization and dropout
-        self.layer_norm = torch.nn.LayerNorm(2*self.config.hidden_size)
+        self.layer_norm = torch.nn.LayerNorm(2 * self.config.hidden_size)
         self.dropout = torch.nn.Dropout(config.dropout_prob)
+
+        # Pre-compute block indices for efficiency
+        self.block_indices = self._compute_block_indices()
+
+        # Cache for spatial scales
+        self.register_buffer(    
+            "spatial_scale_base",
+            torch.tensor(1.0 / self.efficientnet_config.image_size)
+        )
+
+    def _compute_block_indices(self) -> List[int]:
+        """Compute block indices for efficientnet."""
+        indices = []
+        cum_sum = 0
+        for num_blocks in self.efficientnet_config.num_block_repeats:
+            cum_sum += num_blocks
+            indices.append(cum_sum)
+        return indices
 
     def forward(self, piexel_values, rois):
         """Forward pass of the model."""
@@ -222,10 +249,7 @@ class GraphConvolution(torch.nn.Module):
         self.in_features = in_features
         self.out_features = out_features
         self.weight = torch.nn.Parameter(torch.FloatTensor(in_features, out_features))
-        if bias:
-            self.bias = torch.nn.Parameter(torch.FloatTensor(out_features))
-        else:
-            self.register_parameter('bias', None)
+        self.bias = torch.nn.Parameter(torch.FloatTensor(out_features)) if bias else None
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -239,7 +263,7 @@ class GraphConvolution(torch.nn.Module):
         output = torch.matmul(adj, support)
         if self.bias is not None:
             output += self.bias
-        return torch.relu(output)
+        return torch.nn.functional.relu(output, inplace=True)
 
 
 class GCN(torch.nn.Module):
@@ -264,9 +288,7 @@ class GCN(torch.nn.Module):
             out_features=1
         )
         # Learnable parameter for weighting the relation adjacency matrix
-        self.eta = torch.nn.Parameter(torch.FloatTensor(1))
-        # Initialize eta to 1.0
-        torch.nn.init.constant_(self.eta, 1.0)
+        self.eta = torch.nn.Parameter(torch.ones(1))
         # Graph convolutional layers
         self.gc1 = GraphConvolution(2*config.hidden_size, config.hidden_size)
         #  Second graph convolutional layer
@@ -290,13 +312,13 @@ class GCN(torch.nn.Module):
 
     def adj_angle_matrix(self, adj_a):
         angle_embeddings = self.angle_embeddings(adj_a)
-        hidden_states = torch.relu(self.first_linear(angle_embeddings))
+        hidden_states = torch.nn.functional.relu(self.first_linear(angle_embeddings), inplace=True)
         outputs =  torch.sigmoid(self.second_linear(hidden_states))
         return outputs.squeeze()
 
     def attention_pooling(self, x):
         """Attention pooling layer to get graph-level representation."""
-        attn_weights = torch.softmax(self.attention_linear(x), dim=1)
+        attn_weights = torch.nn.functional.softmax(self.attention_linear(x), dim=1)
         graph_embedding = torch.sum(attn_weights * x, dim=1)
         return graph_embedding
 
@@ -336,6 +358,11 @@ class LayoutGCNModel(torch.nn.Module):
             self.visual_encoder = VisualEncoder(config)
         # Graph convolutional network
         self.gcn = GCN(config)
+        # Cache for sequence mask generation
+        self.register_buffer(
+            "position_ids",
+            torch.arange(self.config.max_num_nodes, dtype=torch.long)
+        )
 
     def forward(self,
             token_ids: Optional[torch.Tensor] = None,
@@ -362,8 +389,8 @@ class LayoutGCNModel(torch.nn.Module):
         device = token_ids.device
         # (batch_size, max_num_nodes, sum(num_filters))
         flatten_token_ids = token_ids.view(-1, self.config.max_seq_length)
-        graph_range = torch.arange(self.config.max_num_nodes, device=device).unsqueeze(0)
-        graph_mask = graph_range.expand(num_nodes.shape[0], self.config.max_num_nodes) < num_nodes.unsqueeze(1)
+        graph_range = self.position_ids.unsqueeze(0).expand(num_nodes.shape[0], self.config.max_num_nodes)
+        graph_mask = (graph_range < num_nodes.unsqueeze(1)).to(torch.int64)
         flatten_sequence_lengths = sequence_lengths.view(-1)[graph_mask.view(-1) > 0]
         # Text encoder
         sequence_outputs, pooling_outputs, sequence_mask = self.text_cnn(
@@ -602,7 +629,7 @@ class LayoutGCNForInfoExtraction(LayoutGCNBaseModel):
 
         padding_sequence_mask = torch.zeros(
             size=(flatten_node_embeddings.shape[0], self.config.max_seq_length),
-            dtype=torch.bool,
+            dtype=torch.int64,
             device=logits.device
         )
         padding_sequence_mask[output["graph_mask"].view(-1) > 0] = output["sequence_mask"]
@@ -646,7 +673,7 @@ class LinkPredictionOutput(ModelOutput):
 
 
 class LayoutGCNForLinkPrediction(LayoutGCNBaseModel):
-    
+
     def __init__(self, config):
         super(LayoutGCNForLinkPrediction, self).__init__(config)
         if config.directed_link:

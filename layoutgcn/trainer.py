@@ -227,119 +227,17 @@ def main():
     parser = HfArgumentParser((DatasetArguments, ModelArguments, TrainingArguments))
     dataset_args, model_args, training_args = parser.parse_args_into_dataclasses()
 
-    def make_building_map_fn(dataset_args, vocabulary, mappings, num_nodes, sequence_lengths, label_counts):
-
-        def build_vocab_and_mappings(example):
-            blocks = json.loads(example["blocks"])
-            for block in blocks:
-                # Build vocab
-                if dataset_args.do_pre_tokenize:
-                    tokens = block["content"].strip().split(dataset_args.sep_token)
-                else:
-                    tokens = list(block["content"].strip())
-                sequence_lengths.append(len(tokens))
-                for token in tokens:
-                    if dataset_args.do_lower_case:
-                        token = token.lower()
-                    if token in vocabulary:
-                        continue
-                    vocabulary[token] = len(vocabulary)
-
-                # Node classification task
-                if dataset_args.task_type == "node_classification":
-                    if block.get("category") is None:
-                        continue
-                    if block["category"] not in mappings:
-                        mappings[block["category"]] = len(mappings) + 1
-                    if block.get("category") not in label_counts:
-                        label_counts[block["category"]] = 0
-                    label_counts[block["category"]] += 1
-                # Information extraction task
-                if dataset_args.task_type == "information_extraction":
-                    for label in block.get("labels", []):
-                        if label.get("id") is None:
-                            label["id"] = str(uuid.uuid4()).replace("-", "")
-                        if label.get("category") is None:
-                            raise ValueError("Category is required for information extraction task.")
-                        if label["category"] not in mappings:
-                            mappings[label["category"]] = 2 * len(mappings) + 1
-                        if label["category"] not in label_counts:
-                            label_counts[label["category"]] = 0
-                        label_counts[label["category"]] += 1
-            # Document classification task
-            if dataset_args.task_type == "document_classification":
-                if example.get("category") is None:
-                    raise ValueError("Category is required for document classification task.")
-                if example["category"] not in mappings:
-                    mappings[example["category"]] = len(mappings)
-                if example.get("category") not in label_counts:
-                    label_counts[example["category"]] = 0
-                label_counts[example["category"]] += 1
-            example["blocks"] = json.dumps(blocks, ensure_ascii=False)
-            # number of nodes
-            num_nodes.append(len(blocks))
-            return example
-
-        return build_vocab_and_mappings
-
-    # pre-process data
-    raw_datasets = load_dataset("json", data_dir=dataset_args.data_dir)
-    datasets = raw_datasets.map(LayougGCNDocProcessor.pre_process, batched=False, load_from_cache_file=False)
-
-    mappings = {}
-    vocabulary = {}
-    num_nodes = []
-    sequence_lengths = []
-    label_count = {}
-    # add special tokens
-    if dataset_args.pad_token is not None:
-        vocabulary[dataset_args.pad_token] = len(vocabulary)
-    if dataset_args.unk_token is not None:
-        vocabulary[dataset_args.unk_token] = len(vocabulary)
-    # build vocabulary and mappings
-    datasets["train"].map(
-        function=make_building_map_fn(dataset_args, vocabulary, mappings, num_nodes, sequence_lengths, label_count),
-        batched=False,
-        load_from_cache_file=False
-    )
-    logger.info(f"Vocabulary size: {len(vocabulary)}.")
-    logger.info(f"Maximum number of nodes: {max(num_nodes)}, average number of nodes: {sum(num_nodes) / len(num_nodes)}.")
-    logger.info(f"Maximum length of sequence: {max(sequence_lengths)}, average length of sequence: {sum(sequence_lengths) / len(sequence_lengths)}.")
-    logger.info(f"Number of samples for each category: {", ".join([f"{k}-{v}" for k, v in label_count.items()])}.")
-
-    # create output directory if not exists
-    if not os.path.exists(training_args.output_dir):
-        os.makedirs(training_args.output_dir)
     model_path = os.path.join(training_args.output_dir, "final_model")
-    if not os.path.exists(model_path):
-        os.makedirs(model_path)
 
-    # save vocabulary
-    vocab_file = os.path.join(training_args.output_dir, "final_model/vocab.json")
-    with open(vocab_file, "w", encoding="utf-8") as fp:
-        json.dump(vocabulary, fp, ensure_ascii=False, indent=4)
-
-    # configuration for processor
-    processor_config = DocProcessorConfig(
-        vocab_file=vocab_file,
-        max_seq_length=dataset_args.max_seq_length,
-        max_num_nodes=dataset_args.max_num_nodes,
-        do_lower_case=dataset_args.do_lower_case,
-        do_pre_tokenize=dataset_args.do_pre_tokenize,
-        radical_alpha=dataset_args.radical_alpha,
-        angle_delta=dataset_args.angle_delta,
-        sep_token=dataset_args.sep_token,
-        unk_token=dataset_args.unk_token,
-        pad_token=dataset_args.pad_token,
-        label2id=mappings,
-        use_image=dataset_args.use_image,
-        efficientnet_model_path=dataset_args.efficientnet_model_path,
-        shuffle_prob=dataset_args.shuffle_prob,
-        task_type=dataset_args.task_type
-    )
-    processor_config.to_json_file(os.path.join(training_args.output_dir, "final_model/processor_config.json"))
+    # Load processor config and build processor
+    processor_config_file = os.path.join(training_args.output_dir, "final_model/processor_config.json")
+    processor_config = DocProcessorConfig.from_json_file(processor_config_file)
     doc_processor = LayougGCNDocProcessor(processor_config)
 
+    # Load dataset
+    datasets = load_dataset("json", data_dir=dataset_args.data_dir)
+
+    # Build model config and model
     model_config = LayoutGCNConfig(
         model_name=model_args.model_name,
         num_word_embeddings=doc_processor.vocab_size,
@@ -357,7 +255,6 @@ def main():
         roi_pooling_size=model_args.roi_pooling_size,
         num_labels=processor_config.num_labels
     )
-   
     model_config.to_json_file(os.path.join(training_args.output_dir, "final_model/model_config.json"))
     if dataset_args.task_type == "doc_classification":
         model_cls = LayoutGCNForDocClassification
@@ -369,27 +266,68 @@ def main():
         model_cls = LayoutGCNForLinkPrediction
     else:
         raise ValueError(f"Task type {dataset_args.task_type} is not supported.")
-
     model = model_cls(config=model_config)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    def process_fn(example):
-        output = doc_processor(
-            blocks=json.loads(example["blocks"]),
-            image=example.get("image"),
-            height=example.get("height"),
-            width=example.get("width"),
-            category=example.get("category"),
-            padding=True,
-            truncation=True,
-            is_training=True
-        )
-        return output
+    def train_transform(batched_examples):
+        def process_fn(example):
+            output = doc_processor(
+                blocks=json.loads(example["blocks"]),
+                image=example.get("image"),
+                height=example.get("height"),
+                width=example.get("width"),
+                category=example.get("category"),
+                padding=True,
+                truncation=True,
+                is_training=True
+            )
+            return output
+
+        processed_batch = {}
+
+        keys = list(batched_examples.keys())
+        batch_size = len(batched_examples[keys[0]])
+        for index in range(batch_size):
+            example = {key: batched_examples[key][index] for key in keys}
+            processed_example = process_fn(example)
+            for key, value in processed_example.items():
+                if key not in processed_batch:
+                    processed_batch[key] = []
+                processed_batch[key].append(value)
+        return processed_batch
+
+    def valid_transform(batched_examples):
+        def process_fn(example):
+            output = doc_processor(
+                blocks=json.loads(example["blocks"]),
+                image=example.get("image"),
+                height=example.get("height"),
+                width=example.get("width"),
+                category=example.get("category"),
+                padding=True,
+                truncation=True,
+                is_training=False
+            )
+            return output
+
+        processed_batch = {}
+
+        keys = list(batched_examples.keys())
+        batch_size = len(batched_examples[keys[0]])
+        for index in range(batch_size):
+            example = {key: batched_examples[key][index] for key in keys}
+            processed_example = process_fn(example)
+            for key, value in processed_example.items():
+                if key not in processed_batch:
+                    processed_batch[key] = []
+                processed_batch[key].append(value)
+        return processed_batch
 
     # Get Dataset
-    column_names = datasets["train"].column_names
-    datasets = datasets.map(process_fn, batched=False, remove_columns=column_names, load_from_cache_file=False)
+    datasets["train"].set_transform(train_transform)
+    #datasets = datasets.map(process_fn, batched=False, remove_columns=column_names, load_from_cache_file=False)
+    datasets["validation"].set_transform(valid_transform)
 
     current_path, _ = os.path.split(os.path.abspath(__file__))
     metric = evaluate.load(os.path.join(current_path, "metrics/accuracy.py"))
@@ -420,7 +358,8 @@ def main():
         if len(result) > 1:
             result["combined_score"] = np.mean(list(result.values())).item()
         return result
-
+    
+    training_args.remove_unused_columns = False
     trainer = Trainer(
         model=model,
         args=training_args,

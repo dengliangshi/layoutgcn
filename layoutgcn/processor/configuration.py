@@ -39,6 +39,7 @@ class DocProcessorConfig(BaseConfig):
         use_image: Optional[bool]=False,
         efficientnet_model_path: Optional[str]=None,
         shuffle_prob: Optional[float]=0.2,
+        dropped_prob: Optional[float]=0.1,
         task_type: Optional[str]="document_classification",
         **kwargs
     ):
@@ -56,6 +57,7 @@ class DocProcessorConfig(BaseConfig):
         self.use_image = use_image
         self.efficientnet_model_path = efficientnet_model_path
         self.shuffle_prob = shuffle_prob
+        self.dropped_prob = dropped_prob
         self.task_type = task_type
         if self.label2id is not None:
             self.id2label = {v:k for k, v in self.label2id.items()}

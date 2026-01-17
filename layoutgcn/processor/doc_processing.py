@@ -78,6 +78,21 @@ class LayougGCNDocProcessor(object):
             blocks.append(block)
         example["blocks"] = json.dumps(blocks, ensure_ascii=False)
         return example
+    
+    def _augment_blocks(self, blocks: list[dict]):
+
+        copied_blocks = copy.deepcopy(blocks)
+
+        if self.config.shuffle_prob > 0 and random.random() < self.config.shuffle_prob:
+            random.shuffle(copied_blocks)
+
+        if self.config.dropped_prob > 0 and random.random() < self.config.dropped_prob:
+            copied_blocks = [block for block in copied_blocks if random.random() < self.config.dropped_prob]
+        
+        if not copied_blocks:
+            copied_blocks = blocks
+
+        return copied_blocks
 
     def __call__(self,
             blocks: Optional[list[dict]] = None,
@@ -95,8 +110,8 @@ class LayougGCNDocProcessor(object):
         if blocks is None:
             raise ValueError(f"You need to provide at least one input to call {self.__class__.__name__}")
         # Shuffle the blocks
-        if is_training and self.config.shuffle_prob > 0 and random.random() < self.config.shuffle_prob:
-            random.shuffle(blocks)
+        if is_training:
+            blocks = self._augment_blocks(blocks)
         # Truncate the number of nodes
         if truncation and self.config.max_num_nodes is not None:
             blocks = blocks[:self.config.max_num_nodes]
@@ -148,7 +163,7 @@ class LayougGCNDocProcessor(object):
         layout_features = np.concatenate([position, size, np.expand_dims(shape, axis=-1)], axis=-1)
         mask = (np.arange(self.config.max_num_nodes) < num_nodes).reshape(-1, 1)
         masked_layout_features = layout_features * mask.astype(np.float32)
-        outputs["layout_features"] = np.array(masked_layout_features)
+        outputs["layout_features"] = np.array(masked_layout_features, dtype=np.float32)
         if return_tensors:
             outputs["layout_features"] = torch.tensor([outputs["layout_features"]], dtype=torch.float32)
         # Get the adjacency angle matrix
@@ -176,6 +191,7 @@ class LayougGCNDocProcessor(object):
         delta_y = np.maximum(left_top[..., 1], right_bottom[..., 1])
         distance = np.sqrt(np.square(np.clip(delta_x, 0, None)) + np.square(np.clip(delta_y, 0, None)))
         adj_radical_dist = np.exp(-1 * self.config.radical_alpha * distance / dist_norm) * adj_mask
+        adj_radical_dist = np.array(adj_radical_dist, dtype=np.float32)
         outputs["adj_radical_dist"] = torch.tensor([adj_radical_dist], dtype=torch.float32) if return_tensors else adj_radical_dist
 
         # 
@@ -319,16 +335,17 @@ class LayougGCNDocProcessor(object):
         for block in blocks:
             if previous is not None:
                 is_newline = self._is_newline(previous, block)
+            text = ""
             for label in block.get("labels"):
                 if label["category"] != category:
                     continue
-                text = block["content"][label["start"]:label["end"]]
-                if not values or is_newline:
-                    values.append(text)
-                    scores.append([label["score"]])
-                else:
-                    values[-1] = values[-1] + text
-                    scores[-1].append(label["score"])
+                text += block["content"][label["start"]:label["end"]]
+            if not values or is_newline:
+                values.append(text)
+                scores.append([label["score"]])
+            else:
+                values[-1] = values[-1] + text
+                scores[-1].append(label["score"])
             previous = block
 
         scores = [sum(score) / len(score) for score in scores]
