@@ -370,6 +370,7 @@ class LayougGCNDocProcessor(object):
         return result
 
     def _post_process_for_ie(self,
+        predictions: Optional[Union[np.array, torch.Tensor]],
         probabilities: Optional[Union[np.array, torch.Tensor]],
         mask: Optional[Union[np.array, torch.Tensor]]=None,
         blocks: Optional[list[dict]]=None
@@ -378,7 +379,7 @@ class LayougGCNDocProcessor(object):
         expressions = [f"({value} )?({value + 1} )*{value + 1}|{value}" for value in values]
         pattern = re.compile(f"({'|'.join(expressions)})(?!\d)")
         # [max_num_nodes, max_seq_length]
-        label_ids = (np.argmax(probabilities, axis=-1) * mask).tolist()
+        label_ids = (predictions * mask).tolist()
         scores = np.max(probabilities, axis=-1).tolist()
         copied_blocks = copy.deepcopy(blocks)
         for index in range(len(copied_blocks)):
@@ -396,7 +397,8 @@ class LayougGCNDocProcessor(object):
         }
 
     def post_process(self,
-        probabilities: Optional[Union[np.array, torch.Tensor]],
+        probabilities: Optional[Union[np.array, torch.Tensor]]=None,
+        predictions: Optional[Union[np.array, torch.Tensor]]=None,
         mask: Optional[Union[np.array, torch.Tensor]]=None,
         blocks: Optional[list[dict]]=None
     ):
@@ -410,6 +412,6 @@ class LayougGCNDocProcessor(object):
         if self.config.task_type == "node_classification":
             outputs = self._post_process_for_node_cls(probabilities, blocks)
         if self.config.task_type == "information_extraction":
-            outputs = self._post_process_for_ie(probabilities, mask, blocks)
+            outputs = self._post_process_for_ie(predictions, probabilities, mask, blocks)
 
         return outputs

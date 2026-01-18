@@ -67,7 +67,8 @@ def process_fn(processor, sample):
 
 def post_process(processor, sample, column_names):
     output = processor.post_process(
-        probabilities=sample["probability"],
+        predictions=sample.get("predictions"),
+        probabilities=sample["probabilities"],
         mask=sample["mask"],
         blocks=json.loads(sample["blocks"])
     )
@@ -122,11 +123,15 @@ def main(args):
                 for key in batch_dataset.features if key in fn_args
             }
             output = model(**inputs, return_dict=True)
-            probabilities = output.probabilities.detach().cpu().numpy().tolist()
-            masks = output.mask.detach().cpu().numpy().tolist()
+            if processor_config.task_type == "information_extraction":
+                predictions = output.predictions.detach().cpu().numpy()
+            probabilities = output.probabilities.detach().cpu().numpy()
+            masks = output.mask.detach().cpu().numpy()
             for index in range(len(batch_dataset)):
                 row = {key: batch_dataset[key][index] for key in batch_dataset.features}
-                row["probability"] = probabilities[index]
+                if processor_config.task_type == "information_extraction":
+                    row["predictions"] = predictions[index]
+                row["probabilities"] = probabilities[index]
                 row["mask"] = masks[index]
                 result = post_process(processor, row, column_names)
                 results.append(result)

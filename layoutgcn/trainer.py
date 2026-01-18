@@ -355,7 +355,7 @@ def main():
             )
         elif dataset_args.task_type == "information_extraction":
             mask = p.predictions[2].reshape([-1])
-            predictions = np.argmax(p.predictions[1], axis=-1).reshape([-1])
+            predictions = p.predictions[-1].reshape([-1])
             references = p.label_ids.reshape([-1])
             result = metric.compute(
                 predictions=predictions[mask > 0],
