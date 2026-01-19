@@ -28,7 +28,7 @@ from datasets import load_dataset
 # User define module
 from layoutgcn.model.configuration import LayoutGCNConfig
 from layoutgcn.processor.configuration import DocProcessorConfig
-from layoutgcn.processor.doc_processing import LayougGCNDocProcessor
+from layoutgcn.processor.doc_processing import LayoutGCNDocProcessor
 
 
 # ------------------------------------------------------Global Variables----------------------------------------------------
@@ -200,7 +200,7 @@ def main():
 
     # pre-process data
     raw_datasets = load_dataset("json", data_dir=dataset_args.data_dir)
-    datasets = raw_datasets.map(LayougGCNDocProcessor.pre_process, batched=False, load_from_cache_file=False)
+    datasets = raw_datasets.map(LayoutGCNDocProcessor.pre_process, batched=False, load_from_cache_file=False)
 
     mappings = {}
     vocabulary = {}
@@ -254,6 +254,14 @@ def main():
         task_type=dataset_args.task_type
     )
     processor_config.to_json_file(os.path.join(training_args.output_dir, "final_model/processor_config.json"))
+
+    data_dir = os.path.join(training_args.output_dir, "data")
+    if not os.path.exists(data_dir):
+        os.makedirs(data_dir)
+
+    # save processed dataset
+    for key in datasets:
+        datasets[key].to_json(os.path.join(data_dir, f"{key}.json"))
 
 
 if __name__ == "__main__":

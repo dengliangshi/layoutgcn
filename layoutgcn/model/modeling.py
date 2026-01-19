@@ -664,7 +664,7 @@ class LayoutGCNForInfoExtraction(LayoutGCNBaseModel):
         if self.config.use_crf:
             predictions = self._decode_with_crf(logits, output["sequence_mask"])
         else:
-            predictions = logits.argmax(dim=-1)
+            predictions = logits.argmax(dim=-1) * output["sequence_mask"]
 
         # Compute probabilities
         probabilities = F.softmax(logits, dim=-1)
@@ -699,11 +699,19 @@ class LayoutGCNForInfoExtraction(LayoutGCNBaseModel):
         reshaped_padding_sequence_mask = padding_sequence_mask.view(-1, self.config.max_num_nodes, self.config.max_seq_length)
 
         # Compute loss if labels are provided
-        if self.config.use_crf:
-            labels.view((-1, self.config.max_seq_length))[flatten_graph_mask > 0]
-            loss = - self.crf(emissions=logits, tags=labels, mask=output["sequence_mask"].bool(), reduction='mean') if labels is not None else None
+        if labels is not None:
+            labels_no_padding = labels.view((-1, self.config.max_seq_length))[flatten_graph_mask > 0]
+            if self.config.use_crf:
+                loss = -self.crf(
+                    emissions=logits,
+                    tags=labels_no_padding * output["sequence_mask"],
+                    mask=output["sequence_mask"].bool(),
+                    reduction="mean"
+                )
+            else:
+                loss = self._compute_loss(logits, labels_no_padding)
         else:
-            loss = self._compute_loss(logits, labels.view((-1, self.config.max_seq_length))[flatten_graph_mask > 0]) if labels is not None else None
+            loss = None
 
         if not return_dict:
             output = (logits, reshaped_padding_probabilities, reshaped_padding_sequence_mask, reshaped_padding_predictions, )

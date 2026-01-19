@@ -4,4 +4,4 @@ python3 -m layoutgcn.predictor \
     --model-path ./outputs/final_model/ \
     --output-dir ./outputs/ \
     --batch-size 64 \
-    --do-evaluate True
+    --do-evaluate

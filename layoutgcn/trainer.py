@@ -32,7 +32,7 @@ from layoutgcn.model.modeling import LayoutGCNForDocClassification
 from layoutgcn.model.modeling import LayoutGCNForInfoExtraction
 from layoutgcn.model.modeling import LayoutGCNForLinkPrediction
 from layoutgcn.processor.configuration import DocProcessorConfig
-from layoutgcn.processor.doc_processing import LayougGCNDocProcessor
+from layoutgcn.processor.doc_processing import LayoutGCNDocProcessor
 
 
 # ------------------------------------------------------Global Variables----------------------------------------------------
@@ -239,7 +239,7 @@ def main():
     # Load processor config and build processor
     processor_config_file = os.path.join(training_args.output_dir, "final_model/processor_config.json")
     processor_config = DocProcessorConfig.from_json_file(processor_config_file)
-    doc_processor = LayougGCNDocProcessor(processor_config)
+    doc_processor = LayoutGCNDocProcessor(processor_config)
 
     # Load dataset
     datasets = load_dataset("json", data_dir=dataset_args.data_dir)
@@ -260,6 +260,7 @@ def main():
         use_image=dataset_args.use_image,
         efficientnet_model_path=dataset_args.efficientnet_model_path,
         roi_pooling_size=model_args.roi_pooling_size,
+        use_crf=model_args.use_crf,
         num_labels=processor_config.num_labels
     )
     model_config.to_json_file(os.path.join(training_args.output_dir, "final_model/model_config.json"))

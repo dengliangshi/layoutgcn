@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 # -----------------------------------------------------------Main-----------------------------------------------------------
-class LayougGCNDocProcessor(object):
+class LayoutGCNDocProcessor(object):
 
 
     tokenizer_class = "LayoutGCNTokenizer"
@@ -377,7 +377,7 @@ class LayougGCNDocProcessor(object):
     ):
         values = sorted(self.config.label2id.values(), reverse=True)
         expressions = [f"({value} )?({value + 1} )*{value + 1}|{value}" for value in values]
-        pattern = re.compile(f"({'|'.join(expressions)})(?!\d)")
+        pattern = re.compile(f"({'|'.join(expressions)})(?!\\d)")
         # [max_num_nodes, max_seq_length]
         label_ids = (predictions * mask).tolist()
         scores = np.max(probabilities, axis=-1).tolist()

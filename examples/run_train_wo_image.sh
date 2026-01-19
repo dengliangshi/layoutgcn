@@ -13,7 +13,7 @@ python3 -m layoutgcn.preprocess \
 
 python3 -m layoutgcn.trainer \
     --run-name layoutgcn-wo-image \
-    --data-dir ./data/ \
+    --data-dir ./outputs/data/ \
     --task-type information_extraction \
     --max-seq-length 45 \
     --max-num-nodes 32 \
