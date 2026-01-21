@@ -40,6 +40,8 @@ class DocProcessorConfig(BaseConfig):
         efficientnet_model_path: Optional[str]=None,
         shuffle_prob: Optional[float]=0.2,
         dropped_prob: Optional[float]=0.1,
+        dropped_blocks_prob: Optional[float]=0.1,
+        fake_size_prob: Optional[float]=0.5,
         task_type: Optional[str]="document_classification",
         **kwargs
     ):
@@ -58,6 +60,8 @@ class DocProcessorConfig(BaseConfig):
         self.efficientnet_model_path = efficientnet_model_path
         self.shuffle_prob = shuffle_prob
         self.dropped_prob = dropped_prob
+        self.dropped_blocks_prob = dropped_blocks_prob
+        self.fake_size_prob = fake_size_prob
         self.task_type = task_type
         if self.label2id is not None:
             self.id2label = {v:k for k, v in self.label2id.items()}

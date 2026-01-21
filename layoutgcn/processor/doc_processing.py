@@ -14,7 +14,7 @@ import uuid
 import copy
 import logging
 import random
-from typing import Optional, Union
+from typing import Optional, Union, List
 
 # Third-party libraries
 import torch
@@ -72,13 +72,23 @@ class LayoutGCNDocProcessor(object):
             # Skip empty block
             if block.get("content") is None or not block["content"].strip():
                 continue
+            # Skip low score block
+            if block.get("score", 1.0) < 0.4:
+                continue
+            # Skip invalid bndbox
+            x_list = [point[0] for point in block.get("bndbox", [])]
+            y_list = [point[1] for point in block.get("bndbox", [])]
+            width = max(x_list) - min(x_list)
+            height = max(y_list) - min(y_list)
+            if width <=0 or height <=0 or height / width > 5:
+                continue
             # Generate id for each block
             if block.get("id") is None:
                 block["id"] = str(uuid.uuid4()).replace("-", "")
             blocks.append(block)
         example["blocks"] = json.dumps(blocks, ensure_ascii=False)
         return example
-    
+
     def _augment_blocks(self, blocks: list[dict]):
 
         copied_blocks = copy.deepcopy(blocks)
@@ -87,12 +97,63 @@ class LayoutGCNDocProcessor(object):
             random.shuffle(copied_blocks)
 
         if self.config.dropped_prob > 0 and random.random() < self.config.dropped_prob:
-            copied_blocks = [block for block in copied_blocks if random.random() < self.config.dropped_prob]
+            copied_blocks = [block for block in copied_blocks if random.random() < self.config.dropped_blocks_prob]
         
         if not copied_blocks:
             copied_blocks = blocks
 
-        return copied_blocks
+        if self.config.fake_size_prob > 0 and random.random() < self.config.fake_size_prob:
+            height, width = self._calculate_doc_size(copied_blocks)
+        else:
+            height, width = None, None
+
+        return copied_blocks, height, width
+
+    def _calculate_doc_size(self, blocks: list[dict]):
+
+        x_max = max([block["bndbox"][2][0] for block in blocks])
+        y_max = max([block["bndbox"][2][1] for block in blocks])
+
+        return 1.1 * y_max, 1.1 * x_max
+
+    def _get_angle_adj(self, bndboxes: np.ndarray, delta: int = 10):
+
+        # Calculate the center point
+        center_y = bndboxes[:, [1, 3]].mean(axis=1)
+        center_x = bndboxes[:, [0, 2]].mean(axis=1)
+        center_yx = np.stack([center_y, center_x], axis=-1)
+
+        bndboxes_i = bndboxes[:, None, :]
+        bndboxes_j = bndboxes[None, :, :]
+
+        i_left_top = np.maximum(bndboxes_i[..., :2], bndboxes_j[..., :2])
+        i_right_bottom = np.minimum(bndboxes_i[..., 2:], bndboxes_j[..., 2:])
+        intersection = np.maximum(i_right_bottom - i_left_top, 0)
+
+        size_i = bndboxes_i[..., 2:] - bndboxes_i[..., :2]
+        size_j = bndboxes_j[..., 2:] - bndboxes_j[..., :2]
+        min_size = np.minimum(size_i, size_j)
+
+        valid_intersection = (intersection > 0).all(axis=-1)
+        overlap_ratio = np.divide(
+            intersection,
+            min_size,
+            out=np.zeros_like(intersection, dtype=np.float32),
+            where=min_size > 0
+        )
+        overlap_flag = valid_intersection & (overlap_ratio > 0.5).all(axis=-1)
+
+        delta_yx = center_yx[:, None, :] - center_yx[None, :, :]
+
+        delta_yx[overlap_flag] = 0
+
+        rad = np.arctan2(delta_yx[..., 0], delta_yx[..., 1])
+        angle = np.rad2deg(rad)
+
+        angle = np.where(angle < 0, angle + 360, angle)
+
+        return (angle / delta).astype(np.int32)
+
 
     def __call__(self,
             blocks: Optional[list[dict]] = None,
@@ -111,10 +172,14 @@ class LayoutGCNDocProcessor(object):
             raise ValueError(f"You need to provide at least one input to call {self.__class__.__name__}")
         # Shuffle the blocks
         if is_training:
-            blocks = self._augment_blocks(blocks)
+            blocks, height, width = self._augment_blocks(blocks)
         # Truncate the number of nodes
         if truncation and self.config.max_num_nodes is not None:
             blocks = blocks[:self.config.max_num_nodes]
+        # Calculate document size if not provided
+        if height is None or width is None:
+            height, width = self._calculate_doc_size(blocks)
+        # Get the number of nodes
         num_nodes = len(blocks)
         outputs["num_nodes"] = torch.tensor([num_nodes], dtype=torch.int32) if return_tensors else num_nodes
         # Tokenize the text in each block
@@ -173,14 +238,7 @@ class LayoutGCNDocProcessor(object):
         tiled_boxes = np.tile(expand_boxes, [1, boxes.shape[0], 1])
         # [num_blocks, num_blocks, 4]
         trans_boxes = tiled_boxes.transpose(1, 0, 2)
-        # overlap area
-        tiled_center = (tiled_boxes[..., :2] + tiled_boxes[..., 2:]) / 2
-        trans_center = (trans_boxes[..., :2] + trans_boxes[..., 2:]) / 2
-        rad = np.arctan2(trans_center[..., 1] - tiled_center[..., 1], trans_center[..., 0] - tiled_center[..., 0])
-        angle = rad * 180 / np.pi
-        angle = np.where(angle < 0, angle + 360, angle)
-        adj_mask = (mask.reshape(-1, 1) & mask.reshape(1, -1)).astype(np.float32)
-        adj_angle = (angle * adj_mask / self.config.angle_delta).astype(np.int32)
+        adj_angle = self._get_angle_adj(boxes, delta=self.config.angle_delta)
         outputs["adj_angle"] = torch.tensor([adj_angle], dtype=torch.int32) if return_tensors else adj_angle
 
         # Get the adjacency distance matrix
@@ -190,6 +248,7 @@ class LayoutGCNDocProcessor(object):
         delta_x = np.maximum(left_top[..., 0], right_bottom[..., 0])
         delta_y = np.maximum(left_top[..., 1], right_bottom[..., 1])
         distance = np.sqrt(np.square(np.clip(delta_x, 0, None)) + np.square(np.clip(delta_y, 0, None)))
+        adj_mask = (mask.reshape(-1, 1) & mask.reshape(1, -1)).astype(np.float32)
         adj_radical_dist = np.exp(-1 * self.config.radical_alpha * distance / dist_norm) * adj_mask
         adj_radical_dist = np.array(adj_radical_dist, dtype=np.float32)
         outputs["adj_radical_dist"] = torch.tensor([adj_radical_dist], dtype=torch.float32) if return_tensors else adj_radical_dist
@@ -312,9 +371,6 @@ class LayoutGCNDocProcessor(object):
         target_height = target_y2 - target_y1
         target_char_len = target_width / len(target["content"])
 
-        if source_height / (target_height + 1e-5) > 2.5 or target_height / (source_height + 1e-5) > 2.5:
-            return True
-
         if target_y1 > source_y2 or target_y2 < source_y1:
             y_gap = max(target_y1 - source_y2, source_y1 - target_y2)
             if y_gap > 1.5 * (target_height + source_height):
@@ -324,6 +380,33 @@ class LayoutGCNDocProcessor(object):
             if x_gap > 2.5 * (target_char_len + source_char_len):
                 return True
         return False
+    
+    def _sorted_blocks(self, blocks: list[dict]):
+
+        if not blocks or len(blocks) <= 1:
+            return blocks
+        
+        row_number = 0
+
+        sorted_blocks = sorted(blocks, key=lambda x: x["bndbox"][0][1])
+
+        y_list = [point[1] for point in sorted_blocks[0]["bndbox"]]
+        row_end = max(y_list)
+
+        rows = []
+        for block in sorted_blocks:
+            y_list = [point[1] for point in block["bndbox"]]
+            if (min(y_list) <= row_end):
+                rows.append((row_number, block))
+                row_end = max(row_end, max(y_list))
+            else:
+                row_number += 1
+                rows.append((row_number, block))
+                row_end = max(y_list)
+        
+        sorted_rows = sorted(rows, key=lambda x: (x[0], x[1]["bndbox"][0][0]))
+
+        return [row[1] for row in sorted_rows]
 
     def _concat_values(self, category, blocks: list[dict]):
 
@@ -365,7 +448,7 @@ class LayoutGCNDocProcessor(object):
                 category2blocks[label["category"]].append(block)
         result = {}
         for category, values in category2blocks.items():
-            value, score = self._concat_values(category, values)
+            value, score = self._concat_values(category, self._sorted_blocks(values))
             result[category] = {"text": value, "score": score}
         return result
 
