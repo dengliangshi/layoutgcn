@@ -26,9 +26,10 @@ python3 -m layoutgcn.trainer \
     --per-device-train-batch-size 32 \
     --per-device-eval-batch-size 8 \
     --learning-rate 0.001 \
-    --warmup-steps 200 \
-    --save-strategy steps \
-    --save-steps 500 \
-    --eval-strategy steps \
-    --eval-steps 100 \
+    --weight-decay 0.01 \
+    --warmup-ratio 0.1 \
+    --save-strategy epoch \
+    --eval-strategy epoch \
+    --metric-for-best-model accuracy \
+    --load-best-model-at-end True \
     --save-total-limit 3 

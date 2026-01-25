@@ -27,8 +27,13 @@ from .tokenization import LayoutGCNTokenizer
 from .configuration import DocProcessorConfig
 
 # ------------------------------------------------------Global Variables----------------------------------------------------
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("LayoutGCN")
 
+logging.basicConfig(
+    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+    datefmt="%m/%d/%Y %H:%M:%S",
+    level=logging.INFO
+)
 
 # -----------------------------------------------------------Main-----------------------------------------------------------
 class LayoutGCNDocProcessor(object):
@@ -42,11 +47,12 @@ class LayoutGCNDocProcessor(object):
     def __init__(self, config: DocProcessorConfig):
         """See base class."""
         self.config = config
+        
         # Image processor
-        if self.config.use_image:
-            self.image_processor = EfficientNetImageProcessor.from_pretrained(config.efficientnet_model_path)
-        else:
-            self.image_processor = None
+        self.image_processor = (EfficientNetImageProcessor.from_pretrained(config.efficientnet_model_path)
+            if self.config.use_image else None
+        )
+
         # Tokenizer
         self.tokenizer = LayoutGCNTokenizer(
             vocab_file=config.vocab_file,
@@ -59,37 +65,50 @@ class LayoutGCNDocProcessor(object):
         )
         self.vocab_size = self.tokenizer.vocab_size
         self.padding_idx = self.tokenizer.pad_token_id
-    
+
     @classmethod
     def pre_process(cls, example):
 
         # Generate id for each example
         if example.get("id") is None:
             example["id"] = str(uuid.uuid4()).replace("-", "")
+        original_blocks = json.loads(example["blocks"])
         
-        blocks = []
-        for block in json.loads(example["blocks"]):
-            # Skip empty block
-            if block.get("content") is None or not block["content"].strip():
+        filtered_blocks = []
+        
+        for block in original_blocks:
+            # Skip empty and low score block
+            content = block.get("content", "").strip()
+            if not content or block.get("score", 1.0) < 0.2:
                 continue
-            # Skip low score block
-            if block.get("score", 1.0) < 0.4:
-                continue
+
             # Skip invalid bndbox
             x_list = [point[0] for point in block.get("bndbox", [])]
             y_list = [point[1] for point in block.get("bndbox", [])]
             width = max(x_list) - min(x_list)
             height = max(y_list) - min(y_list)
+            
             if width <=0 or height <=0 or height / width > 5:
                 continue
+            
             # Generate id for each block
             if block.get("id") is None:
                 block["id"] = str(uuid.uuid4()).replace("-", "")
-            blocks.append(block)
-        example["blocks"] = json.dumps(blocks, ensure_ascii=False)
+
+            filtered_blocks.append(block)
+
+        example["blocks"] = json.dumps(filtered_blocks, ensure_ascii=False)
+ 
         return example
 
-    def _augment_blocks(self, blocks: list[dict]):
+    def _calculate_doc_size(self, blocks: List[dict]):
+
+        x_max = max([block["bndbox"][2][0] for block in blocks])
+        y_max = max([block["bndbox"][2][1] for block in blocks])
+
+        return 1.1 * y_max, 1.1 * x_max
+
+    def _augment_blocks(self, blocks: List[dict]):
 
         copied_blocks = copy.deepcopy(blocks)
 
@@ -97,8 +116,8 @@ class LayoutGCNDocProcessor(object):
             random.shuffle(copied_blocks)
 
         if self.config.dropped_prob > 0 and random.random() < self.config.dropped_prob:
-            copied_blocks = [block for block in copied_blocks if random.random() < self.config.dropped_blocks_prob]
-        
+            copied_blocks = [block for block in copied_blocks if random.random() > self.config.dropped_blocks_prob]
+
         if not copied_blocks:
             copied_blocks = blocks
 
@@ -109,19 +128,12 @@ class LayoutGCNDocProcessor(object):
 
         return copied_blocks, height, width
 
-    def _calculate_doc_size(self, blocks: list[dict]):
-
-        x_max = max([block["bndbox"][2][0] for block in blocks])
-        y_max = max([block["bndbox"][2][1] for block in blocks])
-
-        return 1.1 * y_max, 1.1 * x_max
-
-    def _get_angle_adj(self, bndboxes: np.ndarray, delta: int = 10):
+    def _get_angle_adj(self, bndboxes: np.ndarray, adj_mask: np.ndarray, delta: int = 10):
 
         # Calculate the center point
         center_y = bndboxes[:, [1, 3]].mean(axis=1)
         center_x = bndboxes[:, [0, 2]].mean(axis=1)
-        center_yx = np.stack([center_y, center_x], axis=-1)
+        center_xy = np.stack([center_x, center_y], axis=-1)
 
         bndboxes_i = bndboxes[:, None, :]
         bndboxes_j = bndboxes[None, :, :]
@@ -134,54 +146,65 @@ class LayoutGCNDocProcessor(object):
         size_j = bndboxes_j[..., 2:] - bndboxes_j[..., :2]
         min_size = np.minimum(size_i, size_j)
 
-        valid_intersection = (intersection > 0).all(axis=-1)
         overlap_ratio = np.divide(
             intersection,
             min_size,
             out=np.zeros_like(intersection, dtype=np.float32),
             where=min_size > 0
         )
-        overlap_flag = valid_intersection & (overlap_ratio > 0.5).all(axis=-1)
+        overlap_flag = (intersection > 0) & (overlap_ratio > 0.5)
 
-        delta_yx = center_yx[:, None, :] - center_yx[None, :, :]
+        delta_xy = center_xy[None, :, :] - center_xy[:, None, :]
+        delta_xy[overlap_flag] = 0
 
-        delta_yx[overlap_flag] = 0
-
-        rad = np.arctan2(delta_yx[..., 0], delta_yx[..., 1])
+        rad = np.arctan2(delta_xy[..., 1], delta_xy[..., 0])
         angle = np.rad2deg(rad)
 
         angle = np.where(angle < 0, angle + 360, angle)
 
-        return (angle / delta).astype(np.int32)
-
+        return (angle * adj_mask / delta).astype(np.int32)
 
     def __call__(self,
-            blocks: Optional[list[dict]] = None,
+            blocks: Optional[List[dict]] = None,
             image: Optional[Image.Image] = None,
             height: Optional[int] = None,
             width: Optional[int] = None,
-            category: Optional[Union[str, list[str]]] = None,
+            category: Optional[Union[str, List[str]]] = None,
             padding: Union[bool] = True,
             truncation: Union[bool] = True,
             is_training: Optional[bool] = False,
             return_tensors: Union[bool] = False
         ):
         outputs = {}
+
         # Check inputs
         if blocks is None:
             raise ValueError(f"You need to provide at least one input to call {self.__class__.__name__}")
-        # Shuffle the blocks
+
+        # Apply data augmentation if training
         if is_training:
             blocks, height, width = self._augment_blocks(blocks)
-        # Truncate the number of nodes
+       
+       # Truncate the number of nodes
         if truncation and self.config.max_num_nodes is not None:
             blocks = blocks[:self.config.max_num_nodes]
+
         # Calculate document size if not provided
         if height is None or width is None:
             height, width = self._calculate_doc_size(blocks)
+
+        for block in blocks:
+            y_list = [point[1] for point in block["bndbox"]]
+            offset = (max(y_list) - min(y_list)) * 0.1
+            block["bndbox"][0][1] += offset
+            block["bndbox"][1][1] += offset
+            block["bndbox"][2][1] += offset
+            block["bndbox"][3][1] += offset
+        
         # Get the number of nodes
         num_nodes = len(blocks)
         outputs["num_nodes"] = torch.tensor([num_nodes], dtype=torch.int32) if return_tensors else num_nodes
+        
         # Tokenize the text in each block
         token_ids = []
         sequence_length = []
@@ -194,121 +217,131 @@ class LayoutGCNDocProcessor(object):
             )
             token_ids.append(block_token_ids)
             sequence_length.append(length)
+        
         if padding:
+            padding_count = self.config.max_num_nodes - num_nodes
             padding_token_id_row = [self.tokenizer.pad_token_id, ] * self.config.max_seq_length
-            token_ids += [padding_token_id_row, ] * (self.config.max_num_nodes - num_nodes)
-            sequence_length += [0, ] * (self.config.max_num_nodes - num_nodes)
+            token_ids.extend([padding_token_id_row, ] * padding_count)
+            sequence_length.extend([0, ] * padding_count)
         outputs["token_ids"] = np.array(token_ids, dtype=np.int32)
         outputs["sequence_lengths"] = np.array(sequence_length, dtype=np.int32)
+
         if return_tensors:
             outputs["token_ids"] = torch.tensor([outputs["token_ids"]], dtype=torch.int32)
             outputs["sequence_lengths"] = torch.tensor([outputs["sequence_lengths"]], dtype=torch.int32)
-        # Get the height and width of the document
-        if height is None or width is None:
-            if image is not None:
-                width, height = image.size
-            else:
-                raise ValueError("If no document image is provided, height and width of document have to be specified.")
+
         # Get the layout features
-        boxes = np.asarray([
+        boxes = np.array([
             [
                 block["bndbox"][0][0], block["bndbox"][0][1],
                 block["bndbox"][2][0], block["bndbox"][2][1]
             ] for block in blocks
-        ])
+        ], dtype=np.float32)
+
         # Padding boxes
         if padding and num_nodes < self.config.max_num_nodes:
-            boxes = np.vstack([
-                boxes,
-                np.array([[0, 0, 0, 0], ] * (self.config.max_num_nodes - num_nodes))
-            ])
+            padding_boxes = np.zeros((self.config.max_num_nodes - num_nodes, 4), dtype=np.float32)
+            boxes = np.vstack([boxes, padding_boxes])
+
+        # Calculate layout features
         position = boxes / np.array([width, height, width, height])
         size = (boxes[..., 2:] - boxes[..., :2]) / np.array([width, height])
         shape = (boxes[..., 2] - boxes[..., 0]) / np.clip(boxes[..., 3] - boxes[..., 1], 1, None) / width
-        layout_features = np.concatenate([position, size, np.expand_dims(shape, axis=-1)], axis=-1)
-        mask = (np.arange(self.config.max_num_nodes) < num_nodes).reshape(-1, 1)
-        masked_layout_features = layout_features * mask.astype(np.float32)
-        outputs["layout_features"] = np.array(masked_layout_features, dtype=np.float32)
+        layout_features = np.concatenate([position, size, np.expand_dims(shape, axis=-1)], axis=-1).astype(np.float32)
+
+        # Apply mask
+        mask = (np.arange(self.config.max_num_nodes) < num_nodes).reshape(-1, 1).astype(np.float32)
+        outputs["layout_features"] = layout_features * mask
+
         if return_tensors:
             outputs["layout_features"] = torch.tensor([outputs["layout_features"]], dtype=torch.float32)
-        # Get the adjacency angle matrix
-        # [num_blocks, 1, 4]
-        expand_boxes = np.expand_dims(boxes, axis=1)
-        # [num_blocks, num_blocks, 4]
-        tiled_boxes = np.tile(expand_boxes, [1, boxes.shape[0], 1])
-        # [num_blocks, num_blocks, 4]
-        trans_boxes = tiled_boxes.transpose(1, 0, 2)
-        adj_angle = self._get_angle_adj(boxes, delta=self.config.angle_delta)
+        
+        # Get the adjacency mask
+        adj_mask = mask.reshape(-1, 1) @ mask.reshape(1, -1)
+
+        # Angle adjacency
+        adj_angle = self._get_angle_adj(boxes, adj_mask=adj_mask, delta=self.config.angle_delta)
         outputs["adj_angle"] = torch.tensor([adj_angle], dtype=torch.int32) if return_tensors else adj_angle
 
         # Get the adjacency distance matrix
         dist_norm = math.sqrt(width ** 2 + height ** 2)
-        left_top = tiled_boxes[..., :2] - trans_boxes[..., 2:]
-        right_bottom = trans_boxes[..., :2] - tiled_boxes[..., 2:]
+        boxes_i = boxes[:, None, :]
+        boxes_j = boxes[None, :, :]
+
+        left_top = boxes_i[..., :2] - boxes_j[..., 2:]
+        right_bottom = boxes_j[..., :2] - boxes_i[..., 2:]
         delta_x = np.maximum(left_top[..., 0], right_bottom[..., 0])
         delta_y = np.maximum(left_top[..., 1], right_bottom[..., 1])
+        
         distance = np.sqrt(np.square(np.clip(delta_x, 0, None)) + np.square(np.clip(delta_y, 0, None)))
-        adj_mask = (mask.reshape(-1, 1) & mask.reshape(1, -1)).astype(np.float32)
-        adj_radical_dist = np.exp(-1 * self.config.radical_alpha * distance / dist_norm) * adj_mask
-        adj_radical_dist = np.array(adj_radical_dist, dtype=np.float32)
-        outputs["adj_radical_dist"] = torch.tensor([adj_radical_dist], dtype=torch.float32) if return_tensors else adj_radical_dist
+        outputs["adj_radical_dist"] = np.exp(-1 * self.config.radical_alpha * distance / dist_norm) * adj_mask
+        
+        if return_tensors:
+            outputs["adj_radical_dist"] = torch.tensor([outputs["adj_radical_dist"]], dtype=torch.float32)
 
-        # 
+        # Process image
         if self.config.use_image and image is not None:
             width, height = image.size
             image_features = self.image_processor(image.convert("RGB"))
             w_resized_ratio = self.image_processor.size["width"] / width
             h_resized_ratio = self.image_processor.size["height"] / height
-            outputs["pixel_values"] = torch.tensor([image_features["pixel_values"]], dtype=torch.float32) if return_tensors else image_features["pixel_values"]
-            boxes = boxes / np.array([w_resized_ratio, h_resized_ratio, w_resized_ratio, h_resized_ratio])
-            outputs["boxes"] = torch.tensor([boxes], dtype=torch.float32) if return_tensors else boxes
+            outputs["pixel_values"] = (torch.tensor([image_features["pixel_values"]], dtype=torch.float32)
+                if return_tensors else image_features["pixel_values"])
+            resized_boxes = boxes * np.array([w_resized_ratio, h_resized_ratio, w_resized_ratio, h_resized_ratio])
+            outputs["rois"] = torch.tensor([resized_boxes], dtype=torch.float32) if return_tensors else resized_boxes
 
-        if category is not None and self.config.task_type == "document_classification":
-            if self.config.problem_type == "single_label_classification":
-                outputs["labels"] = self.config.label2id.get(category)
-
-            elif self.config.problem_type == "multi_label_classification":
-                outputs["labels"] = [
-                    self.tokenizer.label2id(label) for label in category
-                ]
-
-        elif self.config.task_type == "node_classification":
-            outputs["labels"] = [self.config.label2id.get(block.get("category"), 0) for block in blocks]
-            if padding:
-                outputs["labels"] = outputs["labels"] + [-100, ] * (self.config.max_num_nodes - num_nodes)
-
-        elif self.config.task_type == "information_extraction":
- 
-            outputs["labels"] = []
-            
-            for block in blocks:
-                previous = 0
-                sub_labels = []
-                for label in block.get("labels", []):
-                    tokens = self.tokenizer.encode(block["content"][previous:label["start"]])
-                    sub_labels.extend([0, ] * len(tokens))
-                    label_id = self.config.label2id.get(label.get("category"), 0)
-                    sub_labels.append(label_id)
-                    tokens = self.tokenizer.encode(block["content"][label["start"]:label["end"]])
-                    sub_labels.extend([label_id + 1, ] * (len(tokens) - 1))
-                    previous = label["end"]
-                if previous < len(block["content"]):
-                    tokens = self.tokenizer.encode(block["content"][previous:])
-                    sub_labels.extend([0, ] * len(tokens))
-                if truncation:
-                    sub_labels = sub_labels[:self.config.max_seq_length]
-                if padding:
-                    sub_labels = sub_labels + [-100, ] * (self.config.max_seq_length - len(sub_labels))
-                outputs["labels"].append(sub_labels)
-
-            if padding:
-                row = [-100, ] * self.config.max_seq_length
-                outputs["labels"] = outputs["labels"] + [row, ] * (self.config.max_num_nodes - len(outputs["labels"]))
+        outputs["labels"] = self._process_labels(blocks, category, padding, truncation)
 
         if outputs["labels"] is not None and return_tensors:
             outputs["labels"] = torch.tensor([outputs["labels"]], dtype=torch.int64)
 
         return outputs
+
+    def _process_labels(self, blocks: List[dict], category: Optional[str]=None, padding: bool=True, truncation: bool=True):
+
+        if category is not None and self.config.task_type == "document_classification":
+            return self.config.label2id.get(category)
+        
+        elif self.config.task_type == "node_classification":
+            labels = [self.config.label2id.get(block.get("category"), 0) for block in blocks]
+            if padding:
+                labels = labels + [-100, ] * (self.config.max_num_nodes - len(blocks))
+            return labels
+        
+        elif self.config.task_type == "information_extraction":
+            return self._process_ie_labels(blocks, padding, truncation)
+        
+        return None
+
+    def _process_ie_labels(self, blocks: List[dict], padding: bool=True, truncation: bool=True):
+
+        labels = []
+
+        for block in blocks:
+            previous = 0
+            sub_labels = []
+            for label in block.get("labels", []):
+                tokens = self.tokenizer.encode(block["content"][previous:label["start"]])
+                sub_labels.extend([0, ] * len(tokens))
+                label_id = self.config.label2id.get(label.get("category"), 0)
+                sub_labels.append(label_id)
+                tokens = self.tokenizer.encode(block["content"][label["start"]:label["end"]])
+                sub_labels.extend([label_id + 1, ] * (len(tokens) - 1))
+                previous = label["end"]
+            if previous < len(block["content"]):
+                tokens = self.tokenizer.encode(block["content"][previous:])
+                sub_labels.extend([0, ] * len(tokens))
+            if truncation:
+                sub_labels = sub_labels[:self.config.max_seq_length]
+            if padding:
+                sub_labels = sub_labels + [-100, ] * (self.config.max_seq_length - len(sub_labels))
+            labels.append(sub_labels)
+
+        if padding:
+            row = [-100, ] * self.config.max_seq_length
+            labels = labels + [row, ] * (self.config.max_num_nodes - len(labels))
+
+        return labels
 
     def _post_process_for_doc_cls(self,
         probabilities: Optional[Union[np.array, torch.Tensor]]
@@ -323,7 +356,7 @@ class LayoutGCNDocProcessor(object):
 
     def _post_process_for_node_cls(self,
         probabilities: Optional[Union[np.array, torch.Tensor]],
-        blocks: Optional[list[dict]]=None
+        blocks: Optional[List[dict]]=None
     ):
         # [batch_size, max_num_nodes]
         label_ids = np.argmax(probabilities, axis=-1).tolist()
@@ -336,7 +369,7 @@ class LayoutGCNDocProcessor(object):
             "predict_blocks": json.dumps(copied_blocks, ensure_ascii=False)
         }
 
-    def _find_labels(self, label_ids: list[int], scores: list[float], tokens: list[str], pattern: re.Pattern):
+    def _find_labels(self, label_ids: List[int], scores: List[float], tokens: List[str], pattern: re.Pattern):
         labels = []
         sequence = " ".join([str(x) for x in label_ids])
         for match in pattern.finditer(sequence):
@@ -357,7 +390,7 @@ class LayoutGCNDocProcessor(object):
             })
         return labels
     
-    def _is_newline(self, source: list[dict], target: list[dict]):
+    def _is_newline(self, source: List[dict], target: List[dict]):
 
         source_x1, source_y1 = source["bndbox"][0]
         source_x2, source_y2 = source["bndbox"][2]
@@ -381,7 +414,7 @@ class LayoutGCNDocProcessor(object):
                 return True
         return False
     
-    def _sorted_blocks(self, blocks: list[dict]):
+    def _sorted_blocks(self, blocks: List[dict]):
 
         if not blocks or len(blocks) <= 1:
             return blocks
@@ -408,7 +441,7 @@ class LayoutGCNDocProcessor(object):
 
         return [row[1] for row in sorted_rows]
 
-    def _concat_values(self, category, blocks: list[dict]):
+    def _concat_values(self, category, blocks: List[dict]):
 
         values = []
         scores = []
@@ -435,7 +468,7 @@ class LayoutGCNDocProcessor(object):
         sorted_values = sorted(zip(values, scores), key=lambda x: x[1], reverse=True)
         return sorted_values[0]
 
-    def _extract_kv(self, blocks: list[dict]):
+    def _extract_kv(self, blocks: List[dict]):
 
         category2blocks = {}
         # collect blocks for each category
@@ -456,10 +489,10 @@ class LayoutGCNDocProcessor(object):
         predictions: Optional[Union[np.array, torch.Tensor]],
         probabilities: Optional[Union[np.array, torch.Tensor]],
         mask: Optional[Union[np.array, torch.Tensor]]=None,
-        blocks: Optional[list[dict]]=None
+        blocks: Optional[List[dict]]=None
     ):
         values = sorted(self.config.label2id.values(), reverse=True)
-        expressions = [f"({value} )?({value + 1} )*{value + 1}|{value}" for value in values]
+        expressions = [f"({value} |{value + 1} )*({value + 1}|{value})" for value in values]
         pattern = re.compile(f"({'|'.join(expressions)})(?!\\d)")
         # [max_num_nodes, max_seq_length]
         label_ids = (predictions * mask).tolist()

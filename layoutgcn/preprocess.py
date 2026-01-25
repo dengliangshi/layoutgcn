@@ -261,7 +261,7 @@ def main():
 
     # save processed dataset
     for key in datasets:
-        datasets[key].to_json(os.path.join(data_dir, f"{key}.json"))
+        datasets[key].to_json(os.path.join(data_dir, f"{key}.json"), force_ascii=False)
 
 
 if __name__ == "__main__":

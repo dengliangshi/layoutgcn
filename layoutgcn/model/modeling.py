@@ -490,8 +490,9 @@ class DocumentClassifierOutput(ModelOutput):
             Document embedding.
     """
     loss: Optional[torch.FloatTensor] = None
-    logits: Optional[torch.FloatTensor] = None
+    predictions: Optional[torch.LongTensor] = None
     probabilities: Optional[torch.FloatTensor] = None
+    logits: Optional[torch.FloatTensor] = None
 
 
 class LayoutGCNForDocClassification(LayoutGCNBaseModel):
@@ -520,18 +521,20 @@ class LayoutGCNForDocClassification(LayoutGCNBaseModel):
 
         # Classification
         logits = self.classifier(self.dropout(outputs["document_embedding"]))
+        predictions = logits.argmax(dim=-1)
         probabilities = F.softmax(logits, dim=-1)
 
         # Compute loss if labels are provided
         loss = self._compute_loss(logits, labels) if labels is not None else None
 
         if not return_dict:
-            output = (logits, probabilities)
+            output = (predictions, probabilities, logits)
             return ((loss,) + output) if loss is not None else output
 
         return DocumentClassifierOutput(
             loss=loss,
             logits=logits,
+            predictions=predictions,
             probabilities=probabilities
         )
 
@@ -549,8 +552,9 @@ class NodeClassifierOutput(ModelOutput):
             Document embedding.
     """
     loss: Optional[torch.FloatTensor] = None
-    logits: Optional[torch.FloatTensor] = None
+    predictions: Optional[torch.LongTensor] = None
     probabilities: Optional[torch.FloatTensor] = None
+    logits: Optional[torch.FloatTensor] = None
     mask: Optional[torch.FloatTensor] = None
 
 
@@ -580,18 +584,20 @@ class LayoutGCNForNodeClassification(LayoutGCNBaseModel):
         # Classification, [batch_size, max_num_nodes, num_labels]
         logits = self.classifier(outputs["node_embeddings"])
         logits = logits.view(-1, self.config.max_num_nodes, self.config.num_labels)
+        predictions = logits.argmax(dim=-1)
         probabilities = F.softmax(logits, dim=-1)
 
         # Compute loss if labels are provided
         loss = self._compute_loss(logits, labels) if labels is not None else None
 
         if not return_dict:
-            output = (logits, probabilities, output["graph_mask"],)
+            output = (predictions, probabilities, logits, output["graph_mask"],)
             return ((loss,) + output) if loss is not None else output
 
         return NodeClassifierOutput(
             loss=loss,
             logits=logits,
+            predictions=predictions,
             probabilities=probabilities,
             mask=output["graph_mask"]
         )
@@ -610,10 +616,10 @@ class InfoExtractionOutput(ModelOutput):
             Document embedding.
     """
     loss: Optional[torch.FloatTensor] = None
-    logits: Optional[torch.FloatTensor] = None
-    probabilities: Optional[torch.FloatTensor] = None
-    mask: Optional[torch.FloatTensor] = None
     predictions: Optional[torch.LongTensor] = None
+    probabilities: Optional[torch.FloatTensor] = None
+    logits: Optional[torch.FloatTensor] = None
+    mask: Optional[torch.FloatTensor] = None
 
 
 class LayoutGCNForInfoExtraction(LayoutGCNBaseModel):
@@ -714,7 +720,7 @@ class LayoutGCNForInfoExtraction(LayoutGCNBaseModel):
             loss = None
 
         if not return_dict:
-            output = (logits, reshaped_padding_probabilities, reshaped_padding_sequence_mask, reshaped_padding_predictions, )
+            output = (reshaped_padding_predictions, reshaped_padding_probabilities, logits, reshaped_padding_sequence_mask)
             return ((loss,) + output) if loss is not None else output
 
         return InfoExtractionOutput(
@@ -739,8 +745,9 @@ class LinkPredictionOutput(ModelOutput):
             Document embedding.
     """
     loss: Optional[torch.FloatTensor] = None
-    logits: Optional[torch.FloatTensor] = None
+    predictions: Optional[torch.LongTensor] = None
     probabilities: Optional[torch.FloatTensor] = None
+    logits: Optional[torch.FloatTensor] = None
     mask: Optional[torch.FloatTensor] = None
 
 
@@ -802,6 +809,7 @@ class LayoutGCNForLinkPrediction(LayoutGCNBaseModel):
             logits = torch.matmul(edge_features, self.transform).squeeze(-1)
 
         probabilities = torch.sigmoid(logits)
+        predictions = (probabilities > 0.5).long()
 
         if labels is not None:
             sampling_mask = self._n_sampling_mask(logits, labels, output["graph_adj_mask"])
@@ -814,12 +822,13 @@ class LayoutGCNForLinkPrediction(LayoutGCNBaseModel):
             loss = None
 
         if not return_dict:
-            output = (logits, probabilities, output["graph_adj_mask"])
+            output = (predictions, probabilities, logits, output["graph_adj_mask"])
             return ((loss,) + output) if loss is not None else output
         
         return LinkPredictionOutput(
             loss=loss,
             logits=logits,
             probabilities=probabilities,
+            predictions=predictions,
             mask=output["graph_adj_mask"]
         )

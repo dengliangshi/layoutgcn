@@ -166,7 +166,6 @@ def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}.")
 
-
     # Load processor and model
     processor_config = DocProcessorConfig.from_model_path(args.model_path)
     processor = LayoutGCNDocProcessor(processor_config)
@@ -191,74 +190,17 @@ def main(args):
     if args.do_evaluate:
         evaluator = Evaluator(task_type=processor_config.task_type)
         eval_result = evaluator.evaluate(results)
-        print(json.dumps(eval_result, ensure_ascii=False, indent=4))
+        json_str = json.dumps(eval_result, ensure_ascii=False, indent=4)
+        summary_file = os.path.join(args.output_dir, "summary.json")
+        with open(summary_file, "w") as fp:
+            fp.write(json_str)
+        logger.info("Evaluation Results:\n" + json_str)
     
     # Save results
     os.makedirs(args.output_dir, exist_ok=True)
     output_path = os.path.join(args.output_dir, "result.json")
     Dataset.from_list(results).to_json(output_path, force_ascii=False)
     logger.info(f"Results saved to {output_path}.")
-
-    """
-    evaluator = Evaluator(task_type=processor_config.task_type)
-
-    logger.info(f"Model is loaded from {args.model_path}.")
-    if processor_config.task_type == "classification":
-        model = LayoutGCNForDocClassification.load_from_model_path(args.model_path)
-    elif processor_config.task_type == "information_extraction":
-        model = LayoutGCNForInfoExtraction.load_from_model_path(args.model_path)
-    elif processor_config.task_type == "node_classification":
-        model = LayoutGCNForNodeClassification.load_from_model_path(args.model_path)
-    elif processor_config.task_type == "link_prediction":
-        model = LayoutGCNForLinkPrediction.load_from_model_path(args.model_path)
-    else:
-        raise ValueError(f"Task type {processor_config.task_type} is not supported.")
-    
-    model.to(device).eval()
-
-    def pre_process(sample):
-        sample = LayougGCNDocProcessor.pre_process(sample)
-        return sample
-    logger.info(f"Dataset loaded from {args.data_dir}.")
-    datasets = load_dataset("json", data_dir=args.data_dir)
-    if isinstance(datasets, Dataset):
-        dataset = datasets
-    else:
-        dataset = concatenate_datasets([datasets[key] for key in datasets if key =="test"])
-    logger.info(f"Pre-processing dataset...")
-    preprocessed_dataset = dataset.map(pre_process, batched=False, load_from_cache_file=False)
-    column_names = preprocessed_dataset.column_names
-
-    results = []
-    fn_args = inspect.signature(model.forward).parameters.keys()
-    with torch.no_grad():
-        for start_idx in tqdm(range(0, len(preprocessed_dataset), args.batch_size), desc="Inference"):
-            end_index = min(start_idx + args.batch_size, len(preprocessed_dataset))
-            batch_dataset = preprocessed_dataset.select(range(start_idx, end_index))
-            batch_dataset = batch_dataset.map(partial(process_fn, processor), batched=False, desc="Batch").with_format("torch")
-            inputs = {
-                key: batch_dataset[key].to(device)
-                for key in batch_dataset.features if key in fn_args
-            }
-            output = model(**inputs, return_dict=True)
-            if processor_config.task_type == "information_extraction":
-                predictions = output.predictions.detach().cpu().numpy()
-            probabilities = output.probabilities.detach().cpu().numpy()
-            masks = output.mask.detach().cpu().numpy()
-            for index in range(len(batch_dataset)):
-                row = {key: batch_dataset[key][index] for key in batch_dataset.features}
-                if processor_config.task_type == "information_extraction":
-                    row["predictions"] = predictions[index]
-                row["probabilities"] = probabilities[index]
-                row["mask"] = masks[index]
-                result = post_process(processor, row, column_names)
-                results.append(result)
-    if args.do_evaluate:
-        eval_result = evaluator.evaluate(results)
-        print(json.dumps(eval_result, ensure_ascii=False, indent=4))
-    dataset = Dataset.from_list(results)
-    dataset.to_json(os.path.join(args.output_dir, "result.json"), force_ascii=False)
-    """
 
 
 if __name__ == "__main__":

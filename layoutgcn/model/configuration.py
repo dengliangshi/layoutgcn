@@ -9,7 +9,7 @@
 # Standard library
 import os
 import logging
-from typing import Any, Union, Optional
+from typing import Union, Optional
 
 # Third-party libraries
 

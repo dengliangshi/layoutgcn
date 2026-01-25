@@ -9,7 +9,6 @@
 # Standard library
 import os
 import json
-import uuid
 import logging
 from typing import Optional
 from dataclasses import dataclass, field
@@ -21,16 +20,19 @@ import numpy as np
 from transformers import (
     Trainer,
     TrainingArguments,
-    HfArgumentParser
+    HfArgumentParser,
+    EarlyStoppingCallback
 )
 from datasets import load_dataset
 
 # User define module
 from layoutgcn.model.configuration import LayoutGCNConfig
-from layoutgcn.model.modeling import LayoutGCNForNodeClassification
-from layoutgcn.model.modeling import LayoutGCNForDocClassification
-from layoutgcn.model.modeling import LayoutGCNForInfoExtraction
-from layoutgcn.model.modeling import LayoutGCNForLinkPrediction
+from layoutgcn.model.modeling import (
+    LayoutGCNForNodeClassification,
+    LayoutGCNForDocClassification,
+    LayoutGCNForInfoExtraction,
+    LayoutGCNForLinkPrediction
+)
 from layoutgcn.processor.configuration import DocProcessorConfig
 from layoutgcn.processor.doc_processing import LayoutGCNDocProcessor
 
@@ -43,6 +45,13 @@ logging.basicConfig(
     datefmt="%m/%d/%Y %H:%M:%S",
     level=logging.INFO
 )
+
+TASK_MODEL_MAPPING = {
+    "document_classification": LayoutGCNForDocClassification,
+    "node_classification": LayoutGCNForNodeClassification,
+    "information_extraction": LayoutGCNForInfoExtraction,
+    "link_prediction": LayoutGCNForLinkPrediction
+}
 
 # -----------------------------------------------------------Main-----------------------------------------------------------
 @dataclass
@@ -229,23 +238,68 @@ class ModelArguments:
     )
 
 
-def main():
-    
-    parser = HfArgumentParser((DatasetArguments, ModelArguments, TrainingArguments))
-    dataset_args, model_args, training_args = parser.parse_args_into_dataclasses()
+def create_transform_fn(doc_processor, is_training: bool):
+    def transform(batched_examples):
+        
+        keys = list(batched_examples.keys())
+        batch_size = len(batched_examples[keys[0]])
+        processed_batch = {}
 
-    model_path = os.path.join(training_args.output_dir, "final_model")
+        for index in range(batch_size):
+            example = {key: batched_examples[key][index] for key in keys}
 
-    # Load processor config and build processor
-    processor_config_file = os.path.join(training_args.output_dir, "final_model/processor_config.json")
-    processor_config = DocProcessorConfig.from_json_file(processor_config_file)
-    doc_processor = LayoutGCNDocProcessor(processor_config)
+            output = doc_processor(
+                blocks=json.loads(example["blocks"]),
+                image=example.get("image"),
+                height=example.get("height"),
+                width=example.get("width"),
+                category=example.get("category"),
+                padding=True,
+                truncation=True,
+                is_training=is_training
+            )
 
-    # Load dataset
-    datasets = load_dataset("json", data_dir=dataset_args.data_dir)
+            for key, value in output.items():
+                processed_batch.setdefault(key, []).append(value)
 
-    # Build model config and model
-    model_config = LayoutGCNConfig(
+        return processed_batch
+
+    return transform
+
+
+def create_compute_metrics_fn(task_type, metric):
+
+    def compute_metrics(p):
+
+        if task_type == "document_classification":
+            predictions=np.argmax(p.predictions[0], axis=-1),
+            references=p.label_ids
+
+        elif task_type == "node_classification":
+            mask = p.predictions[2].reshape([-1]) > 0
+            predictions = np.argmax(p.predictions[1], axis=-1).reshape([-1])[mask]
+            references = p.label_ids.reshape([-1])[mask]
+
+        elif task_type == "information_extraction":
+            mask = p.predictions[-1].reshape([-1]) > 0
+            predictions = p.predictions[0].reshape([-1])[mask]
+            references = p.label_ids.reshape([-1])[mask]
+
+        else:
+            raise ValueError(f"Task type {task_type} is not supported.")
+
+        result = metric.compute(predictions=predictions, references=references)
+
+        if len(result) > 1:
+            result["accuracy"] = np.mean(list(result.values())).item()
+
+        return result
+
+    return compute_metrics
+
+
+def build_model_config(model_args, dataset_args, processor_config, doc_processor):
+    return LayoutGCNConfig(
         model_name=model_args.model_name,
         num_word_embeddings=doc_processor.vocab_size,
         padding_token_idx=doc_processor.padding_idx,
@@ -263,130 +317,67 @@ def main():
         use_crf=model_args.use_crf,
         num_labels=processor_config.num_labels
     )
-    model_config.to_json_file(os.path.join(training_args.output_dir, "final_model/model_config.json"))
-    if dataset_args.task_type == "doc_classification":
-        model_cls = LayoutGCNForDocClassification
-    elif dataset_args.task_type == "node_classification":
-        model_cls = LayoutGCNForNodeClassification
-    elif dataset_args.task_type == "information_extraction":
-        model_cls = LayoutGCNForInfoExtraction
-    elif dataset_args.task_type == "link_prediction":
-        model_cls = LayoutGCNForLinkPrediction
-    else:
+
+
+def main():
+    
+    parser = HfArgumentParser((DatasetArguments, ModelArguments, TrainingArguments))
+    dataset_args, model_args, training_args = parser.parse_args_into_dataclasses()
+
+    model_path = os.path.join(training_args.output_dir, "final_model")
+    os.makedirs(model_path, exist_ok=True)
+
+    # Load processor config and build processor
+    processor_config_file = os.path.join(model_path, "processor_config.json")
+    processor_config = DocProcessorConfig.from_json_file(processor_config_file)
+    doc_processor = LayoutGCNDocProcessor(processor_config)
+
+    # Load dataset
+    datasets = load_dataset("json", data_dir=dataset_args.data_dir)
+
+    # Build model config and model
+    model_config = build_model_config(model_args, dataset_args, processor_config, doc_processor)
+    model_config.to_json_file(os.path.join(model_path, "model_config.json"))
+    
+    if dataset_args.task_type not in TASK_MODEL_MAPPING:
         raise ValueError(f"Task type {dataset_args.task_type} is not supported.")
+
+    model_cls = TASK_MODEL_MAPPING[dataset_args.task_type]
     model = model_cls(config=model_config)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    def train_transform(batched_examples):
-        def process_fn(example):
-            output = doc_processor(
-                blocks=json.loads(example["blocks"]),
-                image=example.get("image"),
-                height=example.get("height"),
-                width=example.get("width"),
-                category=example.get("category"),
-                padding=True,
-                truncation=True,
-                is_training=True
-            )
-            return output
-
-        processed_batch = {}
-
-        keys = list(batched_examples.keys())
-        batch_size = len(batched_examples[keys[0]])
-        for index in range(batch_size):
-            example = {key: batched_examples[key][index] for key in keys}
-            processed_example = process_fn(example)
-            for key, value in processed_example.items():
-                if key not in processed_batch:
-                    processed_batch[key] = []
-                processed_batch[key].append(value)
-        return processed_batch
-
-    def valid_transform(batched_examples):
-        def process_fn(example):
-            output = doc_processor(
-                blocks=json.loads(example["blocks"]),
-                image=example.get("image"),
-                height=example.get("height"),
-                width=example.get("width"),
-                category=example.get("category"),
-                padding=True,
-                truncation=True,
-                is_training=False
-            )
-            return output
-
-        processed_batch = {}
-
-        keys = list(batched_examples.keys())
-        batch_size = len(batched_examples[keys[0]])
-        for index in range(batch_size):
-            example = {key: batched_examples[key][index] for key in keys}
-            processed_example = process_fn(example)
-            for key, value in processed_example.items():
-                if key not in processed_batch:
-                    processed_batch[key] = []
-                processed_batch[key].append(value)
-        return processed_batch
-
     # Get Dataset
-    datasets["train"].set_transform(train_transform)
-    #datasets = datasets.map(process_fn, batched=False, remove_columns=column_names, load_from_cache_file=False)
-    datasets["validation"].set_transform(valid_transform)
+    datasets["train"].set_transform(create_transform_fn(doc_processor, is_training=True))
+    datasets["validation"].set_transform(create_transform_fn(doc_processor, is_training=False))
+    datasets["test"].set_transform(create_transform_fn(doc_processor, is_training=False))
 
     current_path, _ = os.path.split(os.path.abspath(__file__))
     metric = evaluate.load(os.path.join(current_path, "metrics/accuracy.py"))
 
-    def compute_metrics(p):
-        if dataset_args.task_type == "doc_classification":
-            result = metric.compute(
-                predictions=np.argmax(p.predictions[0], axis=-1),
-                references=p.label_ids
-            )
-        elif dataset_args.task_type == "node_classification":
-            mask = p.predictions[2].reshape([-1])
-            predictions = np.argmax(p.predictions[1], axis=-1).reshape([-1])
-            references = p.label_ids.reshape([-1])
-            result = metric.compute(
-                predictions=predictions[mask > 0],
-                references=references[mask > 0]
-            )
-        elif dataset_args.task_type == "information_extraction":
-            mask = p.predictions[2].reshape([-1])
-            predictions = p.predictions[-1].reshape([-1])
-            references = p.label_ids.reshape([-1])
-            result = metric.compute(
-                predictions=predictions[mask > 0],
-                references=references[mask > 0]
-            )
+    if training_args.do_train:
+        training_args.remove_unused_columns = False
+        early_stopping_callback = EarlyStoppingCallback(early_stopping_patience=10)
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            train_dataset=datasets["train"] if training_args.do_train else None,
+            eval_dataset=datasets["validation"] if training_args.do_eval else None,
+            data_collator=None,
+            compute_metrics=create_compute_metrics_fn(dataset_args.task_type, metric),
+            callbacks=[early_stopping_callback]
+        )
+        training_result = trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
+        trainer.log_metrics("train", training_result.metrics)
+        trainer.save_model(model_path)
 
-        if len(result) > 1:
-            result["combined_score"] = np.mean(list(result.values())).item()
-        return result
-    
-    training_args.remove_unused_columns = False
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=datasets["train"] if training_args.do_train else None,
-        eval_dataset=datasets["validation"] if training_args.do_eval else None,
-        data_collator=None,
-        compute_metrics=compute_metrics
-    )
-    training_result = trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
-    trainer.log_metrics("train", training_result.metrics)
-    trainer.save_model(model_path)
-
-    datasets["test"].set_transform(valid_transform)
-
-    eval_result = trainer.evaluate(
-        eval_dataset=datasets["test"] if training_args.do_eval else None,
-        metric_key_prefix="test"
-    )
-    trainer.log_metrics("test", eval_result)
+    if training_args.do_eval:
+        eval_result = trainer.evaluate(
+            eval_dataset=datasets["test"],
+            metric_key_prefix="test"
+        )
+        trainer.log_metrics("test", eval_result)
 
 if __name__ == "__main__":
     main()
